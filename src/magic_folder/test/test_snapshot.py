@@ -66,6 +66,7 @@ from magic_folder.snapshot import (
     create_local_author,
     create_local_author_from_config,
     create_author_from_json,
+    create_author,
     write_local_author,
     create_snapshot,
     create_snapshot_from_capability,
@@ -158,6 +159,10 @@ class TestRemoteAuthor(AsyncTestCase):
         }
         with ExpectedException(ValueError, ".*requires 'verify_key'.*"):
             create_author_from_json(js)
+
+    def test_author_create_wrong_key(self):
+        with ExpectedException(ValueError, ".*must be a nacl.signing.VerifyKey.*"):
+            create_author("diane", "not a VerifyKey")
 
 
 class TestLocalSnapshot(SyncTestCase):
