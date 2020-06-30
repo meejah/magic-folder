@@ -22,9 +22,7 @@ from twisted.web.client import (
     FileBodyProducer,
 )
 
-from .magic_folder import (
-    load_magic_folders,
-)
+import magic_folder
 
 from eliot import (
     start_action,
@@ -142,7 +140,7 @@ def create_local_author_from_config(config, name=None):
     if name is None:
         name = "default"
     nodedir = config.get_config_path()
-    magic_folders = load_magic_folders(nodedir)
+    magic_folders = magic_folder.load_magic_folders(nodedir)
     if name not in magic_folders:
         raise RuntimeError(
             "No magic-folder named '{}'".format(name)
@@ -278,6 +276,53 @@ class LocalSnapshot(object):
         with open(self.content_path, "rb") as f:
             return f.read()
 
+    def to_json(self):
+        """
+        Serialize the LocalSnapshot to JSON.
+
+        :returns: A JSON string representation of the LocalSnapshot
+        """
+        # Recursively serialize into one object.
+
+        def _serialized_dict(local_snapshot):
+            serialized = {
+                'name' : local_snapshot.name,
+                'metadata' : local_snapshot.metadata,
+                'content_path' : local_snapshot.content_path,
+                'parents_local' : [ _serialized_dict(parent) for parent in local_snapshot.parents_local ]
+            }
+
+            return serialized
+
+        serialized = _serialized_dict(self)
+
+        return (json.dumps(serialized))
+
+    @classmethod
+    def from_json(cls, serialized, author):
+        """
+        Creates a LocalSnapshot from a JSON serialized string that represents the LocalSnapshot.
+
+        :param str serialized: the JSON string that represents the LocalSnapshot
+
+        :param author: an instance of LocalAuthor
+
+        :returns: A LocalSnapshot object representation of the JSON serialized string.
+        """
+        local_snapshot_dict = json.loads(serialized)
+
+        def deserialize_dict(snapshot_dict, author):
+            name = snapshot_dict["name"]
+
+            return cls(
+                name=name,
+                author=author,
+                metadata=snapshot_dict["metadata"],
+                content_path=snapshot_dict["content_path"],
+                parents_local=[ deserialize_dict(parent, author) for parent in snapshot_dict["parents_local"] ],
+            )
+
+        return deserialize_dict(local_snapshot_dict, author)
 
 @attr.s
 class RemoteSnapshot(object):
