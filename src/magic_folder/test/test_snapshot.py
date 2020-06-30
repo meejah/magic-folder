@@ -72,6 +72,7 @@ from magic_folder.snapshot import (
     create_snapshot,
     create_snapshot_from_capability,
     write_snapshot_to_tahoe,
+    LocalSnapshot,
 )
 from magic_folder.tahoe_client import (
     create_tahoe_client,
