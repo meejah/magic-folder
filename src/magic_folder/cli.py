@@ -97,6 +97,9 @@ from allmydata.client import (
 from .magic_folder import (
     MagicFolder,
 )
+from .util.observer import (
+    ListenObserver,
+)
 from .web import (
     magic_folder_web_service,
 )
@@ -591,9 +594,11 @@ class MagicFolderService(MultiService):
                 self.config.tahoe_client_url,
                 Agent(self.reactor),
             )
-        self._listen_endpoint = serverFromString(
-            self.reactor,
-            self.config.api_endpoint,
+        self._listen_endpoint = ListenObserver(
+            serverFromString(
+                self.reactor,
+                self.config.api_endpoint,
+            )
         )
         web_service = magic_folder_web_service(
             self._listen_endpoint,
@@ -708,7 +713,7 @@ class MagicFolderService(MultiService):
     def run(self):
         d = self._when_connected_enough()
         d.addCallback(lambda ignored: self.startService())
-        d.addCallback(lambda ignored: Deferred())
+        d.addCallback(lambda ignored: self._listen_endpoint.observe())
         return d
 
     def startService(self):
