@@ -544,7 +544,12 @@ def run(options):
     # start the daemon services
     config = options.parent.config
     service = MagicFolderService.from_config(reactor, config)
-    return service.run()
+
+    # if this runs successfully, we want to wait forever so return a
+    # Deferred which will never fire.
+    d = service.run()
+    d.addCallback(lambda _: Deferred())
+    return d
 
 
 @inline_callbacks
