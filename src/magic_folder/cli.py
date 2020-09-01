@@ -719,18 +719,11 @@ class MagicFolderService(MultiService):
         d = self._when_connected_enough()
         d.addCallback(lambda ignored: self.startService())
         d.addCallback(lambda ignored: self._listen_endpoint.observe())
+        # The integration tests look for this message. To get rid of
+        # it, we need some other mechanism to determine that this
+        # magic-folder daemon is actually ready and listening.
+        d.addCallback(lambda ignored: print("Completed initial Magic Folder setup"))
         return d
-
-    def startService(self):
-        MultiService.startService(self)
-
-        ds = []
-        for magic_folder in self._iter_magic_folder_services():
-            ds.append(magic_folder.ready())
-        # The integration tests look for this message.  You cannot get rid of
-        # it.
-        print("Completed initial Magic Folder setup")
-        self._starting = gatherResults(ds)
 
     def stopService(self):
         self._starting.cancel()

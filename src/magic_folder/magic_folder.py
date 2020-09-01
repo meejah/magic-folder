@@ -337,13 +337,6 @@ class MagicFolder(service.MultiService):
         self.local_snapshot_service = local_snapshot_service
         local_snapshot_service.setServiceParent(self)
 
-    def ready(self):
-        """
-        :returns: Deferred that fires with None when this magic-folder is
-            ready to operate
-        """
-        return defer.succeed(None)
-
 
 _NICKNAME = Field.for_types(
     u"nickname",
