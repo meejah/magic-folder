@@ -204,7 +204,7 @@ class _CollectiveDirnodeParticipants(object):
             )
         except CannotAddDirectoryEntryError:
             raise ValueError(
-                "Already have a participant called '{}'".format(author.name)
+                u"Already have a participant called '{}'".format(author.name)
             )
 
     @inlineCallbacks
