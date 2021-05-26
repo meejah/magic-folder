@@ -40,3 +40,6 @@ export PIP_FIND_LINKS="file://${WHEELHOUSE_PATH}"
      --notest \
      -e "${MAGIC_FOLDER_TOX_ENVIRONMENT}" \
      ${MAGIC_FOLDER_TOX_ARGS}
+
+#FIXME: build new images with these
+"${BOOTSTRAP_VENV}"/bin/pip install eliot eliot-tree
