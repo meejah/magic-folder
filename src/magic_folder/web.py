@@ -142,6 +142,15 @@ class APIv1(object):
 
     app = Klein()
 
+    @app.handle_errors(Exception)
+    def internal_error(self, request, failure):
+        from eliot import writeFailure
+        writeFailure(failure)
+        request.setResponseCode(http.INTERNAL_SERVER_ERROR)
+        _application_json(request)
+        return b"{}"
+
+
     @app.route("/participants/<string:folder_name>", methods=['GET'])
     @inlineCallbacks
     def list_participants(self, request, folder_name):
