@@ -128,6 +128,9 @@ class BearerTokenAuthorization(Resource, object):
         return Unauthorized()
 
 
+from werkzeug.exceptions import HTTPException
+
+
 @attr.s
 class APIv1(object):
     """
@@ -141,6 +144,12 @@ class APIv1(object):
     _tahoe_client = attr.ib()
 
     app = Klein()
+
+    @app.handle_errors(HTTPException)
+    def internal_error(self, request, failure):
+        request.setResponseCode(failure.value.code or INTERNAL_SERVER_ERROR)
+        _application_json(request)
+        return json.dumps({"reason": failure.value.description}).encode("utf8")
 
     @app.handle_errors(Exception)
     def internal_error(self, request, failure):
