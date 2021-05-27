@@ -261,7 +261,7 @@ class APIv1(object):
         _application_json(request)
         returnValue(b"{}")
 
-    @app.route("/snapshot", methods=['GET'])
+    @app.route("/snapshots", methods=['GET'])
     def list_all_sanpshots(self, request):
         """
         Respond with all of the snapshots for all of the files in all of the
