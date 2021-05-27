@@ -681,6 +681,32 @@ class CreateSnapshotTests(SyncTestCase):
             ),
         )
 
+    def test_create_snapshot_no_folder(self):
+        """
+        A **POST** to **/v1/snapshot/:folder-name** for an unknown folder
+        produces a 404
+        """
+        treq = treq_for_folders(
+            Clock(),
+            FilePath(self.mktemp()),
+            AUTH_TOKEN,
+            {},
+            start_folder_services=True,
+        )
+        self.assertThat(
+            authorized_request(
+                treq,
+                AUTH_TOKEN,
+                b"POST",
+                self.url.child("not-a-folder", "snapshot")
+            ),
+            succeeded(
+                matches_response(
+                    code_matcher=Equals(NOT_FOUND),
+                ),
+            ),
+        )
+
 
 class ParticipantsTests(SyncTestCase):
     """
