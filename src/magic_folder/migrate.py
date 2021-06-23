@@ -18,7 +18,7 @@ from twisted.internet.defer import (
     succeed,
 )
 
-import yaml
+from .util.encoding import load_yaml
 
 from .config import (
     create_global_configuration,
@@ -69,17 +69,15 @@ def magic_folder_migrate(config_dir, listen_endpoint_str, tahoe_node_directory, 
 
     # now that we have the global configuration we find all the
     # configured magic-folders and migrate them.
-    magic_folders = yaml.safe_load(
+    magic_folders = load_yaml(
         tahoe_node_directory.child("private").child("magic_folders.yaml").open("r"),
     )
     for mf_name, mf_config in magic_folders['magic-folders'].items():
-        state_dir = config_dir.child(mf_name)
         author = create_local_author(author_name)
 
         config.create_magic_folder(
             mf_name,
             FilePath(mf_config[u'directory']),
-            state_dir,
             author,
             mf_config[u'collective_dircap'],
             mf_config[u'upload_dircap'],

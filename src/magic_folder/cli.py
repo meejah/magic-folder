@@ -7,6 +7,9 @@ from __future__ import (
 
 import sys
 import getpass
+
+
+import six
 from six.moves import (
     StringIO as MixedIO,
 )
@@ -15,11 +18,7 @@ from appdirs import (
     user_config_dir,
 )
 
-import attr
 
-from twisted.internet.endpoints import (
-    serverFromString,
-)
 from twisted.internet.task import (
     react,
 )
@@ -36,18 +35,8 @@ from twisted.python.filepath import (
     FilePath,
 )
 from twisted.python import usage
-from twisted.application.service import (
-    MultiService,
-)
-from twisted.internet.task import (
-    deferLater,
-)
 from twisted.internet.defer import (
     maybeDeferred,
-    gatherResults,
-    Deferred,
-    inlineCallbacks,
-    returnValue,
 )
 
 from treq.client import (
@@ -58,28 +47,15 @@ from eliot.twisted import (
     inline_callbacks,
 )
 
-from allmydata.util.encodingutil import (
-    argv_to_unicode,
-    to_bytes,
+from .common import (
+    valid_magic_folder_name,
+    InvalidMagicFolderName,
 )
 
-from allmydata.client import (
-    read_config,
-)
-
-from .magic_folder import (
-    MagicFolder,
-)
-from .web import (
-    magic_folder_web_service,
-)
 from .client import (
-    create_http_client,
     CannotAccessAPIError,
-)
-from .status import (
-    WebSocketStatusService,
-    IStatus,
+    create_magic_folder_client,
+    create_http_client,
 )
 
 from .invite import (
@@ -108,11 +84,25 @@ from .config import (
 from .tahoe_client import (
     create_tahoe_client,
 )
-
 from .join import (
     magic_folder_join
 )
+from .service import (
+    MagicFolderService,
+)
 
+if six.PY2:
+    def to_unicode(s):
+        """
+        Convert an argument to unicode.
+        """
+        try:
+            return unicode(s, "utf-8")
+        except UnicodeDecodeError:
+            raise usage.UsageError("Argument {!r} cannot be decoded as UTF-8.", s)
+else:
+    def to_unicode(s):
+        return s
 
 _default_config_path = user_config_dir("magic-folder")
 
@@ -170,7 +160,7 @@ class InitializeOptions(usage.Options):
             )
 
 
-@inlineCallbacks
+@inline_callbacks
 def initialize(options):
 
     yield magic_folder_initialize(
@@ -228,7 +218,7 @@ class MigrateOptions(usage.Options):
             )
 
 
-@inlineCallbacks
+@inline_callbacks
 def migrate(options):
 
     config = yield magic_folder_migrate(
@@ -253,8 +243,8 @@ class AddOptions(usage.Options):
     synopsis = "LOCAL_DIR"
     optParameters = [
         ("poll-interval", "p", "60", "How often to ask for updates"),
-        ("name", "n", None, "The name of this magic-folder"),
-        ("author", "A", None, "Our name for Snapshots authored here"),
+        ("name", "n", None, "The name of this magic-folder", to_unicode),
+        ("author", "A", None, "Our name for Snapshots authored here", to_unicode),
     ]
     description = (
         "Create a new magic-folder."
@@ -275,6 +265,7 @@ class AddOptions(usage.Options):
                 "'{}' isn't a directory".format(local_dir)
             )
 
+
     def postOptions(self):
         super(AddOptions, self).postOptions()
         _fill_author_from_environment(self)
@@ -282,6 +273,10 @@ class AddOptions(usage.Options):
             raise usage.UsageError(
                 "Must specify the --name option"
             )
+        try:
+            valid_magic_folder_name(self['name'])
+        except InvalidMagicFolderName as e:
+            raise usage.UsageError(str(e))
         try:
             if int(self['poll-interval']) <= 0:
                 raise ValueError("should be positive")
@@ -291,7 +286,7 @@ class AddOptions(usage.Options):
             )
 
 
-@inlineCallbacks
+@inline_callbacks
 def add(options):
     """
     Add a new Magic Folder
@@ -301,8 +296,8 @@ def add(options):
     client = create_tahoe_client(options.parent.config.tahoe_client_url, treq)
     yield magic_folder_create(
         options.parent.config,
-        argv_to_unicode(options["name"]),
-        argv_to_unicode(options["author"]),
+        options["name"],
+        options["author"],
         options.local_dir,
         options["poll-interval"],
         client,
@@ -320,7 +315,7 @@ class ListOptions(usage.Options):
     ]
 
 
-@inlineCallbacks
+@inline_callbacks
 def list_(options):
     """
     List existing magic-folders.
@@ -329,7 +324,7 @@ def list_(options):
     yield magic_folder_list(
         reactor,
         options.parent.config,
-        create_http_client(reactor, options.parent.config.api_client_endpoint),
+        options.parent.client,
         options.stdout,
         options["json"],
         options["include-secret-information"],
@@ -351,7 +346,7 @@ class InviteOptions(usage.Options):
 
     def parseArgs(self, nickname):
         super(InviteOptions, self).parseArgs()
-        self.nickname = argv_to_unicode(nickname)
+        self.nickname = to_unicode(nickname)
 
     def postOptions(self):
         if self["name"] is None:
@@ -360,7 +355,7 @@ class InviteOptions(usage.Options):
             )
 
 
-@inlineCallbacks
+@inline_callbacks
 def invite(options):
     from twisted.internet import reactor
     treq = HTTPClient(Agent(reactor))
@@ -403,7 +398,7 @@ class JoinOptions(usage.Options):
             raise usage.UsageError(
                 "'{}' isn't a directory".format(local_dir)
             )
-        self.invite_code = to_bytes(argv_to_unicode(invite_code))
+        self.invite_code = to_unicode(invite_code)
 
     def postOptions(self):
         super(JoinOptions, self).postOptions()
@@ -521,163 +516,6 @@ def run(options):
     return service.run()
 
 
-@inline_callbacks
-def poll(label, operation, reactor):
-    while True:
-        print("Polling {}...".format(label))
-        status, message = yield operation()
-        if status:
-            print("{}: {}, done.".format(label, message))
-            break
-        print("Not {}: {}".format(label, message))
-        yield deferLater(reactor, 1.0, lambda: None)
-
-
-@attr.s
-class MagicFolderService(MultiService):
-    """
-    :ivar reactor: the Twisted reactor to use
-
-    :ivar GlobalConfigDatabase config: our system configuration
-    """
-    reactor = attr.ib()
-    config = attr.ib()
-    status_service = attr.ib(validator=attr.validators.provides(IStatus))
-    tahoe_client = attr.ib(default=None)
-
-    def __attrs_post_init__(self):
-        MultiService.__init__(self)
-        if self.tahoe_client is None:
-            self.tahoe_client = create_tahoe_client(
-                self.config.tahoe_client_url,
-                HTTPClient(Agent(self.reactor)),
-            )
-        self._listen_endpoint = serverFromString(
-            self.reactor,
-            self.config.api_endpoint,
-        )
-        web_service = magic_folder_web_service(
-            self._listen_endpoint,
-            self.config,
-            self,
-            self._get_auth_token,
-            self.tahoe_client,
-            self.status_service,
-        )
-        web_service.setServiceParent(self)
-
-        # We can create the services for all configured folders right now.
-        # They won't do anything until they are started which won't happen
-        # until this service is started.
-        self._create_magic_folder_services()
-
-    def _create_magic_folder_services(self):
-        """
-        Create all of the child magic folder services and attach them to this
-        service.
-        """
-        for name in self.config.list_magic_folders():
-            mf = MagicFolder.from_config(
-                self.reactor,
-                self.tahoe_client,
-                name,
-                self.config,
-                self.status_service,
-            )
-            mf.setServiceParent(self)
-
-    def _iter_magic_folder_services(self):
-        """
-        Iterate over all of the magic folder services which are children of this
-        service.
-        """
-        for service in self:
-            if isinstance(service, MagicFolder):
-                yield service
-
-    def get_folder_service(self, folder_name):
-        """
-        Look up a ``MagicFolder`` by its name.
-
-        :param unicode folder_name: The name of the magic-folder to retrieve.
-
-        :raise KeyError: If no magic-folder with a matching name is found.
-
-        :return MagicFolder: The service for the matching magic-folder.
-        """
-        for service in self._iter_magic_folder_services():
-            if service.folder_name == folder_name:
-                return service
-        raise KeyError(folder_name)
-
-    def _get_auth_token(self):
-        return self.config.api_token
-
-    @classmethod
-    def from_config(cls, reactor, config):
-        """
-        Create a new service given a reactor and global configuration.
-
-        :param GlobalConfigDatabase config: config to use
-        """
-        return cls(
-            reactor,
-            config,
-            WebSocketStatusService(),
-        )
-
-    def _when_connected_enough(self):
-        # start processing the upload queue when we've connected to
-        # enough servers
-        tahoe_config = read_config(self.config.tahoe_node_directory.path, "portnum")
-        threshold = int(tahoe_config.get_config("client", "shares.needed"))
-
-        @inline_callbacks
-        def enough():
-            try:
-                welcome_body = yield self.tahoe_client.get_welcome()
-            except Exception:
-                returnValue((False, "Failed to get welcome page"))
-
-            servers = welcome_body[u"servers"]
-            connected_servers = [
-                server
-                for server in servers
-                if server["connection_status"].startswith("Connected ")
-            ]
-
-            message = "Found {} of {} connected servers (want {})".format(
-                len(connected_servers),
-                len(servers),
-                threshold,
-            )
-
-            if len(connected_servers) < threshold:
-                returnValue((False, message))
-            returnValue((True, message))
-        return poll("connected enough", enough, self.reactor)
-
-    def run(self):
-        d = self._when_connected_enough()
-        d.addCallback(lambda ignored: self.startService())
-        d.addCallback(lambda ignored: Deferred())
-        return d
-
-    def startService(self):
-        MultiService.startService(self)
-
-        ds = []
-        for magic_folder in self._iter_magic_folder_services():
-            ds.append(magic_folder.ready())
-        # The integration tests look for this message.  You cannot get rid of
-        # it (without also changing the tests).
-        print("Completed initial Magic Folder setup")
-        self._starting = gatherResults(ds)
-
-    def stopService(self):
-        self._starting.cancel()
-        MultiService.stopService(self)
-        return self._starting
 
 
 class BaseOptions(usage.Options):
@@ -690,6 +528,8 @@ class BaseOptions(usage.Options):
     ]
 
     _config = None  # lazy-instantiated by .config @property
+    _http_client = None  # lazy-initalized by .client @property
+    _client = None  # lazy-instantiated by .client @property
 
     @property
     def _config_path(self):
@@ -712,6 +552,20 @@ class BaseOptions(usage.Options):
                     u"Unable to load configuration: {}".format(e)
                 )
         return self._config
+
+    @property
+    def client(self):
+        if self._http_client is None:
+            from twisted.internet import reactor
+            self._http_client = create_http_client(reactor, self.config.api_client_endpoint)
+        if self._client is None:
+            from twisted.internet import reactor
+            self._client = create_magic_folder_client(
+                reactor,
+                self.config,
+                self._http_client,
+            )
+        return self._client
 
 
 class MagicFolderCommand(BaseOptions):
@@ -788,7 +642,7 @@ subDispatch = {
 }
 
 
-@inlineCallbacks
+@inline_callbacks
 def dispatch_magic_folder_command(args):
     """
     Run a magic-folder command with the given args
@@ -811,7 +665,7 @@ def dispatch_magic_folder_command(args):
     yield run_magic_folder_options(options)
 
 
-@inlineCallbacks
+@inline_callbacks
 def run_magic_folder_options(options):
     """
     Runs a magic-folder subcommand with the provided options.

@@ -12,6 +12,10 @@ from __future__ import (
 )
 
 from contextlib import contextmanager
+import unicodedata
+
+import attr
+
 
 class BadResponseCode(Exception):
     """
@@ -31,6 +35,43 @@ class BadMetadataResponse(Exception):
     cannot be interpreted as that metadata.
     """
 
+@attr.s(auto_exc=True, frozen=True)
+class APIError(Exception):
+    """
+    An error to be reported from the API.
+
+    :ivar reason unicode: The message to be returned as the ``reason`` key of
+       the error response.
+    :ivar code int: The HTTP status code to use for this error.
+    """
+
+    reason = attr.ib(validator=attr.validators.instance_of(unicode))
+    code = attr.ib(
+        default=None,
+        validator=attr.validators.optional(attr.validators.instance_of(int)),
+    )
+
+    @classmethod
+    def from_exception(cls, code, exception, prefix=None):
+        """
+        Return an exception with the given code, and reason from the given exception.
+
+        :param code int: The HTTP status code to use for this error.
+        :param exception Exception: The exception to get the error message from.
+        :param prefix unicode: A prefix to add to the error message.
+
+        :returns APIError: An error with the given error code and a message that is
+            ``"{prefix}: {exception message}"``.
+        """
+        if prefix is not None:
+            reason = u"{}: {}".format(prefix, exception)
+        else:
+            reason = u"{}".format(exception)
+        return cls(code=code, reason=reason)
+
+    def __str__(self):
+        return self.reason
+
 
 @contextmanager
 def atomic_makedirs(path):
@@ -49,3 +90,44 @@ def atomic_makedirs(path):
         path_b.remove()
         # ...and pass on the error
         raise
+
+
+class InvalidMagicFolderName(Exception):
+    """
+    The given magic folder name contains an invalid character.
+
+    See :py:`valid_magic_folder_name` for details.
+    """
+
+    message = (
+        u"Magic folder names cannot contain '/', '\\', "
+        u"control characters or unassigned characters."
+    )
+
+    def __str__(self):
+        return self.message
+
+
+def valid_magic_folder_name(name):
+    """
+    Check if the magic folder name is valid.
+
+    We disallow:
+
+    - ``\0``, ``/``, and ``\\`` as they can cause issues with the HTTP API
+    - control characters as they are not meant for display
+    - non-characters (reserved and unassigned)
+    - isolated surrogate characters as these are likely from invalid unicode
+      (see PEP 383).
+
+    :param unicode name: the name of the magic-folder to verify
+
+    :raises ValueError: if this is an invalid magic folder name
+    """
+    if (
+        u"\0" in name
+        or u"/" in name
+        or u"\\" in name
+        or any((unicodedata.category(c) in ("Cc", "Cn", "Cs") for c in name))
+    ):
+        raise InvalidMagicFolderName(name)

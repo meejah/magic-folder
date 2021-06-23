@@ -22,6 +22,8 @@ from autobahn.twisted.resource import (
     WebSocketResource,
 )
 
+from eliot import write_failure
+
 from twisted.python.filepath import (
     InsecurePath,
 )
@@ -45,6 +47,10 @@ from twisted.web.resource import (
     Resource,
 )
 
+from hyperlink import DecodedURL
+from werkzeug.exceptions import HTTPException
+from werkzeug.routing import RequestRedirect
+
 from klein import Klein
 
 from allmydata.uri import (
@@ -53,10 +59,9 @@ from allmydata.uri import (
 from allmydata.interfaces import (
     IDirnodeURI,
 )
-from allmydata.util.hashutil import (
-    timing_safe_compare,
-)
+from cryptography.hazmat.primitives.constant_time import bytes_eq as timing_safe_compare
 
+from .common import APIError
 from .status import (
     StatusFactory,
     IStatus,
@@ -70,6 +75,11 @@ from .snapshot import (
 from .participants import (
     participants_from_collective,
 )
+
+def _ensure_utf8_bytes(value):
+    if isinstance(value, unicode):
+        return value.encode('utf-8')
+    return value
 
 
 def magic_folder_resource(get_auth_token, v1_resource):
@@ -143,6 +153,14 @@ class BearerTokenAuthorization(Resource, object):
         # Don't let anything through that isn't authorized.
         return Unauthorized()
 
+def _load_json(body):
+    """
+    Load json from body, raising :py:`APIError` on failure.
+    """
+    try:
+        return json.loads(body)
+    except ValueError as e:
+        raise APIError.from_exception(http.BAD_REQUEST, e, prefix="Could not load JSON")
 
 @attr.s
 class APIv1(object):
@@ -159,8 +177,64 @@ class APIv1(object):
 
     app = Klein()
 
+    @app.handle_errors(APIError)
+    def handle_api_error(self, request, failure):
+        exc = failure.value
+        request.setResponseCode(exc.code or http.INTERNAL_SERVER_ERROR)
+        _application_json(request)
+        return json.dumps({"reason": exc.reason})
+
+    @app.handle_errors(RequestRedirect)
+    def handle_redirect(self, request, failure):
+        exc = failure.value
+        request.setResponseCode(exc.code, exc.name)
+        # Werkzeug double encodes the path of the redirect URL, when merging
+        # slashes[1]. It does not double encode the path when:
+        # - collapsing trailing slashes
+        # - redirecting aliases to the cannonical URL
+        # - an explicit redirect_to on a URL
+        # Since we don't have rules that trigger the second cases[2],
+        # we can work around this be decoding the path here.
+        # [1] https://github.com/pallets/werkzeug/issues/2157
+        # [2] checked in magic_folder.test.test_web.RedirectTests.test_werkzeug_issue_2157_fix
+        location = DecodedURL.from_text(exc.new_url.decode('utf-8'))
+        location = location.encoded_url.replace(path=location.path).to_text()
+        request.setHeader("location", location)
+        _application_json(request)
+        return json.dumps({"location": location})
+
+    @app.handle_errors(HTTPException)
+    def handle_http_error(self, request, failure):
+        """
+        Convert a werkzeug py:`HTTPException` to a json response.
+
+        This mirrors the default code in klein for handling these
+        exceptions, but generates a json body.
+        """
+        exc = failure.value
+        request.setResponseCode(exc.code, exc.name)
+        resp = exc.get_response({})
+        for header, value in resp.headers.items(lower=True):
+            # We skip these, since we have our own content.
+            if header in ("content-length", "content-type"):
+                continue
+            request.setHeader(
+                _ensure_utf8_bytes(header), _ensure_utf8_bytes(value)
+            )
+        _application_json(request)
+        return json.dumps({"reason": exc.description})
+
+    @app.handle_errors(Exception)
+    def fallback_error(self, request, failure):
+        """
+        Turn unknown exceptions into 500 errors, and log the failure.
+        """
+        write_failure(failure)
+        request.setResponseCode(http.INTERNAL_SERVER_ERROR)
+        _application_json(request)
+        return json.dumps({"reason": "unexpected error processing request"})
+
     @app.route("/status")
-    @inlineCallbacks
     def status(self, request):
         return WebSocketResource(StatusFactory(self._status_service))
 
@@ -180,13 +254,7 @@ class APIv1(object):
             folder_config.upload_dircap,
             self._tahoe_client,
         )
-        try:
-            participants = yield collective.list()
-        except Exception:
-            # probably should log this failure
-            request.setResponseCode(http.INTERNAL_SERVER_ERROR)
-            _application_json(request)
-            returnValue(json.dumps({"reason": "unexpected error processing request"}).encode("utf-8"))
+        participants = yield collective.list()
 
         reply = {
             part.name: {
@@ -212,54 +280,45 @@ class APIv1(object):
             returnValue(NoResource(b"{}"))
 
         body = request.content.read()
-        try:
-            participant = json.loads(body)
-            required_keys = {
-                "author",
-                "personal_dmd",
-            }
-            required_author_keys = {
-                "name",
-                # not yet
-                # "public_key_base32",
-            }
-            if set(participant.keys()) != required_keys:
-                raise _InputError("Require input: {}".format(", ".join(sorted(required_keys))))
-            if set(participant["author"].keys()) != required_author_keys:
-                raise _InputError("'author' requires: {}".format(", ".join(sorted(required_author_keys))))
+        participant = _load_json(body)
 
-            author = create_author(
-                participant["author"]["name"],
-                # we don't yet properly track keys but need one
-                # here .. this won't be correct, but we won't use
-                # it .. following code still only looks at the
-                # .name attribute
-                # see https://github.com/LeastAuthority/magic-folder/issues/331
-                VerifyKey(os.urandom(32)),
-            )
+        required_keys = {
+            "author",
+            "personal_dmd",
+        }
+        required_author_keys = {
+            "name",
+            # not yet
+            # "public_key_base32",
+        }
+        if set(participant.keys()) != required_keys:
+            raise _InputError("Require input: {}".format(", ".join(sorted(required_keys))))
+        if set(participant["author"].keys()) != required_author_keys:
+            raise _InputError("'author' requires: {}".format(", ".join(sorted(required_author_keys))))
 
-            dmd = tahoe_uri_from_string(participant["personal_dmd"])
-            if not IDirnodeURI.providedBy(dmd):
-                raise _InputError("personal_dmd must be a directory-capability")
-            if not dmd.is_readonly():
-                raise _InputError("personal_dmd must be read-only")
-            personal_dmd_cap = participant["personal_dmd"]
-        except _InputError as e:
-            request.setResponseCode(http.BAD_REQUEST)
-            returnValue(json.dumps({"reason": str(e)}))
+        author = create_author(
+            participant["author"]["name"],
+            # we don't yet properly track keys but need one
+            # here .. this won't be correct, but we won't use
+            # it .. following code still only looks at the
+            # .name attribute
+            # see https://github.com/LeastAuthority/magic-folder/issues/331
+            VerifyKey(os.urandom(32)),
+        )
+
+        dmd = tahoe_uri_from_string(participant["personal_dmd"])
+        if not IDirnodeURI.providedBy(dmd):
+            raise _InputError("personal_dmd must be a directory-capability")
+        if not dmd.is_readonly():
+            raise _InputError("personal_dmd must be read-only")
+        personal_dmd_cap = participant["personal_dmd"]
 
         collective = participants_from_collective(
             folder_config.collective_dircap,
             folder_config.upload_dircap,
             self._tahoe_client,
         )
-        try:
-            yield collective.add(author, personal_dmd_cap)
-        except Exception:
-            request.setResponseCode(http.INTERNAL_SERVER_ERROR)
-            _application_json(request)
-            # probably should log this error, at least for developers (so eliot?)
-            returnValue(json.dumps({"reason": "unexpected error processing request"}))
+        yield collective.add(author, personal_dmd_cap)
 
         request.setResponseCode(http.CREATED)
         _application_json(request)
@@ -350,11 +409,13 @@ class APIv1(object):
         })
 
 
-class _InputError(ValueError):
+class _InputError(APIError):
     """
     Local errors with our input validation to report back to HTTP
     clients.
     """
+    def __init__(self, reason):
+        super(_InputError, self).__init__(code=http.BAD_REQUEST, reason=reason)
 
 def _application_json(request):
     request.responseHeaders.setRawHeaders(u"content-type", [u"application/json"])
@@ -515,8 +576,13 @@ def _is_authorized(request, get_auth_token):
     if len(authorization) > 1:
         return False
     auth_token = get_auth_token()
-    expected = u"Bearer {}".format(auth_token).encode("ascii")
+    expected = b"Bearer %s" % (auth_token,)
+    # This ends up calling `hmac.compare_digest`. Looking at the source for
+    # that method suggests that it tries to make timing dependence for unequal
+    # length strings be on the second argument.
+    # Pass the attacker controlled value, to avoid leaking length information
+    # of the expected value.
     return timing_safe_compare(
-        authorization[0].encode("ascii"),
         expected,
+        authorization[0].encode("ascii"),
     )

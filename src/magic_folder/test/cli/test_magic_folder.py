@@ -6,9 +6,8 @@ from __future__ import (
 
 import json
 import os.path
-from io import (
-    StringIO,
-)
+
+from eliot.twisted import inline_callbacks
 
 from testtools import (
     ExpectedException,
@@ -67,13 +66,13 @@ from ...endpoints import (
 from ...snapshot import (
     create_local_author,
 )
-from ...list import (
-    magic_folder_list,
-)
 from ...tahoe_client import (
     create_tahoe_client,
 )
 
+from ...common import (
+    InvalidMagicFolderName,
+)
 from ..common_util import (
     parse_cli,
 )
@@ -94,21 +93,20 @@ class ListMagicFolder(AsyncTestCase):
     """
     Tests for the command-line interface ``magic-folder list``.
     """
-    @defer.inlineCallbacks
+
+    def cli(self, argv):
+        return cli(argv, self.config, self.http_client)
+
+    @inline_callbacks
     def setUp(self):
         """
         Create a Tahoe-LAFS node which can contain some magic folder configuration
         and run it.
         """
         yield super(ListMagicFolder, self).setUp()
-        self.client_fixture = SelfConnectedClient(reactor)
-        yield self.client_fixture.use_on(self)
-
-        self.tempdir = self.client_fixture.tempdir
-        self.node_directory = self.client_fixture.node_directory
 
         # the Web APIs need a reference to a "global_service" .. which
-        # is cli.MagicFolderService (a MultiService in fact). It
+        # is service.MagicFolderService (a MultiService in fact). It
         # doesn't declare an interface, but only uses
         # "get_folder_service(folder_name)" .. so we'll duck-type it
         # instead
@@ -127,7 +125,7 @@ class ListMagicFolder(AsyncTestCase):
         self.service = GlobalService()
         self.config = create_testing_configuration(
             FilePath(self.mktemp()),
-            self.node_directory,
+            FilePath(u"/no/tahoe/node-directory"),
         )
         self.http_client = create_testing_http_client(
             reactor,
@@ -140,33 +138,29 @@ class ListMagicFolder(AsyncTestCase):
             WebSocketStatusService(),
         )
 
-    @defer.inlineCallbacks
+    @inline_callbacks
     def test_list_none(self):
         """
         When there are no Magic Folders at all, the output of the list command
         reports this.
         """
-        output = StringIO()
-        yield magic_folder_list(reactor, self.config, self.http_client, output)
-        self.assertThat(
-            output.getvalue(),
-            Contains(u"No magic-folders")
+        outcome = yield self.cli(
+            [b"list"],
         )
+        self.assertThat(outcome.stdout, Contains(u"No magic-folders"))
 
-    @defer.inlineCallbacks
+    @inline_callbacks
     def test_list_none_json(self):
         """
         When there are no Magic Folders at all, the output of the list command
         reports this in JSON format if given ``--json``.
         """
-        output = StringIO()
-        yield magic_folder_list(reactor, self.config, self.http_client, output, as_json=True)
-        self.assertThat(
-            output.getvalue(),
-            AfterPreprocessing(json.loads, Equals({}))
+        outcome = yield self.cli(
+            [b"list", b"--json"],
         )
+        self.assertThat(outcome.stdout, AfterPreprocessing(json.loads, Equals({})))
 
-    @defer.inlineCallbacks
+    @inline_callbacks
     def test_list_some(self):
         """
         When there are Magic Folders, the output of the list command describes
@@ -178,19 +172,17 @@ class ListMagicFolder(AsyncTestCase):
         self.config.create_magic_folder(
             u"list-some-folder",
             folder_path,
-            folder_path.child(u".state"),
             create_local_author(u"alice"),
             u"URI:DIR2-RO:ou5wvazwlyzmqw7yof5ifmgmau:xqzt6uoulu4f3m627jtadpofnizjt3yoewzeitx47vw6memofeiq",
             u"URI:DIR2:bgksdpr3lr2gvlvhydxjo2izea:dfdkjc44gg23n3fxcxd6ywsqvuuqzo4nrtqncrjzqmh4pamag2ia",
             1,
         )
 
-        output = StringIO()
-        yield magic_folder_list(reactor, self.config, self.http_client, output)
-        self.expectThat(output.getvalue(), Contains(u"list-some-folder"))
-        self.expectThat(output.getvalue(), Contains(folder_path.path))
+        outcome = yield self.cli([b"list"])
+        self.expectThat(outcome.stdout, Contains(b"list-some-folder"))
+        self.expectThat(outcome.stdout, Contains(folder_path.path))
 
-    @defer.inlineCallbacks
+    @inline_callbacks
     def test_list_some_json(self):
         """
         When there are Magic Folders, the output of the list command describes
@@ -202,25 +194,17 @@ class ListMagicFolder(AsyncTestCase):
         self.config.create_magic_folder(
             u"list-some-json-folder",
             folder_path,
-            folder_path.child(u".state"),
             create_local_author(u"alice"),
             u"URI:DIR2-RO:ou5wvazwlyzmqw7yof5ifmgmau:xqzt6uoulu4f3m627jtadpofnizjt3yoewzeitx47vw6memofeiq",
             u"URI:DIR2:bgksdpr3lr2gvlvhydxjo2izea:dfdkjc44gg23n3fxcxd6ywsqvuuqzo4nrtqncrjzqmh4pamag2ia",
             1,
         )
 
-        output = StringIO()
-        yield magic_folder_list(
-            reactor,
-            self.config,
-            self.http_client,
-            output,
-            as_json=True,
-            include_secret_information=True,
+        outcome = yield self.cli(
+            [b"list", b"--json", b"--include-secret-information"],
         )
-
-        self.expectThat(
-            output.getvalue(),
+        self.assertThat(
+            outcome.stdout,
             AfterPreprocessing(
                 json.loads,
                 ContainsDict({
@@ -252,6 +236,10 @@ def addOutcomeDetails(testcase, outcome):
 
 
 class CreateMagicFolder(AsyncTestCase):
+
+    def cli(self, argv):
+        return cli(argv, self.config)
+
     @defer.inlineCallbacks
     def setUp(self):
         """
@@ -264,11 +252,9 @@ class CreateMagicFolder(AsyncTestCase):
 
         self.tempdir = self.client_fixture.tempdir
         self.config_dir = FilePath(self.mktemp())
-        create_global_configuration(
+        self.config = create_testing_configuration(
             self.config_dir,
-            u"tcp:4321",
             self.client_fixture.node_directory,
-            u"tcp:localhost:4321",
         )
 
     @defer.inlineCallbacks
@@ -281,8 +267,8 @@ class CreateMagicFolder(AsyncTestCase):
         magic_folder = self.tempdir.child(u"magic-folder")
         magic_folder.makedirs()
 
-        outcome = yield cli(
-            self.config_dir, [
+        outcome = yield self.cli(
+            [
                 b"add",
                 b"--name", b"test",
                 b"--author", b"test",
@@ -305,8 +291,8 @@ class CreateMagicFolder(AsyncTestCase):
         magic_folder = self.tempdir.child(u"magic-folder")
         magic_folder.makedirs()
 
-        outcome = yield cli(
-            self.config_dir, [
+        outcome = yield self.cli(
+            [
                 b"add",
                 b"--name", b"foo",
                 b"--author", b"test",
@@ -319,8 +305,8 @@ class CreateMagicFolder(AsyncTestCase):
             Always(),
         )
 
-        outcome = yield cli(
-            self.config_dir, [
+        outcome = yield self.cli(
+            [
                 b"add",
                 b"--name", b"foo",
                 b"--author", b"test",
@@ -338,6 +324,34 @@ class CreateMagicFolder(AsyncTestCase):
         )
 
     @defer.inlineCallbacks
+    def test_create_invalid_name(self):
+        """
+        `magic-folder add` reports invalid folder names.
+        """
+        # Get a magic folder.
+        magic_folder = self.tempdir.child(u"magic-folder")
+        magic_folder.makedirs()
+
+        outcome = yield self.cli(
+            [
+                b"add",
+                b"--name", b"/",
+                b"--author", b"test",
+                magic_folder.asBytesMode().path,
+            ],
+        )
+
+        self.assertThat(
+            outcome.succeeded(),
+            Equals(False),
+        )
+        self.assertIn(
+            InvalidMagicFolderName.message,
+            outcome.stderr
+        )
+
+
+    @defer.inlineCallbacks
     def test_add_leave_folder(self):
         """
         Create a magic folder and then leave the folder and check
@@ -347,8 +361,8 @@ class CreateMagicFolder(AsyncTestCase):
         magic_folder = self.tempdir.child(u"magic-folder")
         magic_folder.makedirs()
 
-        outcome = yield cli(
-            self.config_dir, [
+        outcome = yield self.cli(
+            [
                 b"add",
                 b"--name", b"foo",
                 b"--author", b"test",
@@ -361,8 +375,8 @@ class CreateMagicFolder(AsyncTestCase):
             str(outcome),
         )
 
-        outcome = yield cli(
-            self.config_dir, [
+        outcome = yield self.cli(
+            [
                 b"leave",
                 b"--name", b"foo",
                 b"--really-delete-write-capability",
@@ -385,8 +399,8 @@ class CreateMagicFolder(AsyncTestCase):
         magic_folder = self.tempdir.child(u"magic-folder")
         magic_folder.makedirs()
 
-        outcome = yield cli(
-            self.config_dir, [
+        outcome = yield self.cli(
+            [
                 b"add",
                 b"--author", b"test",
                 b"--name", b"foo",
@@ -399,8 +413,8 @@ class CreateMagicFolder(AsyncTestCase):
             Equals(True),
         )
 
-        outcome = yield cli(
-            self.config_dir, [
+        outcome = yield self.cli(
+            [
                 b"leave",
                 b"--name", b"bar",
             ],
@@ -425,8 +439,8 @@ class CreateMagicFolder(AsyncTestCase):
         magic_folder = self.tempdir.child(u"magic-folder")
         magic_folder.makedirs()
 
-        outcome = yield cli(
-            self.config_dir, [
+        outcome = yield self.cli(
+            [
                 b"add",
                 b"--name", b"foo",
                 b"--author", b"alice",
@@ -439,8 +453,8 @@ class CreateMagicFolder(AsyncTestCase):
             Equals(True),
         )
 
-        outcome = yield cli(
-            self.config_dir, [
+        outcome = yield self.cli(
+            [
                 b"leave",
                 b"--name", b"foo",
                 b"--really-delete-write-capability",
@@ -452,8 +466,8 @@ class CreateMagicFolder(AsyncTestCase):
             Equals(True),
         )
 
-        outcome = yield cli(
-            self.config_dir, [
+        outcome = yield self.cli(
+            [
                 b"leave",
                 b"--name", b"foo",
             ],
@@ -474,8 +488,8 @@ class CreateMagicFolder(AsyncTestCase):
         Leave a non-existant magic folder. This should result in
         an error.
         """
-        outcome = yield cli(
-            self.config_dir, [
+        outcome = yield self.cli(
+            [
                 b"leave",
                 b"--name", b"foo",
             ],
@@ -490,6 +504,8 @@ class CreateMagicFolder(AsyncTestCase):
             outcome.stderr
         )
 
+
+class ConfigOptionTests(SyncTestCase):
     def test_help_synopsis(self):
         """
         Test if synonsis is defined for the help switch.
@@ -501,6 +517,7 @@ class CreateMagicFolder(AsyncTestCase):
         o.parent = magic_folder_cli.MagicFolderCommand()
         o.parent.getSynopsis()
 
+    @inline_callbacks
     def test_config_directory_is_file(self):
         """
         Using --config with a file is an error
@@ -509,11 +526,11 @@ class CreateMagicFolder(AsyncTestCase):
         with confdir.open("w") as f:
             f.write("dummy\n")
 
-        outcome = yield cli(confdir, ["list"])
+        outcome = yield cli(["--config", confdir.path, "list"])
         self.assertThat(outcome.code, Equals(1))
         self.assertThat(outcome.stderr, Contains("Unable to load configuration"))
 
-    @defer.inlineCallbacks
+    @inline_callbacks
     def test_config_directory_empty(self):
         """
         A directory that is empty isn't valid for --config
@@ -521,9 +538,56 @@ class CreateMagicFolder(AsyncTestCase):
         confdir = FilePath(self.mktemp())
         confdir.makedirs()
 
-        outcome = yield cli(confdir, ["list"])
+        outcome = yield cli(["--config", confdir.path, "list"])
         self.assertThat(outcome.code, Equals(1))
         self.assertThat(outcome.stderr, Contains("Unable to load configuration"))
+
+    @inline_callbacks
+    def test_config_directory(self):
+        """
+        Passing --config option loads the configuration from the provided directory.
+        """
+        confdir = FilePath(self.mktemp())
+        nodedir = self.useFixture(
+            NodeDirectory(FilePath(self.mktemp()))
+        )
+        yield magic_folder_initialize(confdir, u"tcp:5555", nodedir.path, None)
+
+        options = magic_folder_cli.MagicFolderCommand()
+        options.parseOptions(["--config", confdir.path, "list"])
+        self.assertThat(
+            options.config,
+            MatchesStructure(
+                basedir=Equals(confdir),
+                api_endpoint=Equals(u"tcp:5555"),
+                tahoe_node_directory=Equals(nodedir.path),
+            )
+        )
+
+    @inline_callbacks
+    def test_default_config_directory(self):
+        """
+        Not passing a --config loads the configuration from the default directory.
+        """
+        confdir = FilePath(self.mktemp())
+        nodedir = self.useFixture(
+            NodeDirectory(FilePath(self.mktemp()))
+        )
+        yield magic_folder_initialize(confdir, u"tcp:5555", nodedir.path, None)
+
+        options = magic_folder_cli.MagicFolderCommand()
+        # twisted.python.usage.Options use .opts to store
+        # the defaults before parsing. We override that
+        # here to test that parsing a command without
+        # --config picks up that default.
+        options.opts["config"] = confdir.path
+        options.parseOptions(["list"])
+        self.assertThat(
+            options.config,
+            MatchesStructure(
+                basedir=Equals(confdir),
+            )
+        )
 
 
 class CreateErrors(SyncTestCase):

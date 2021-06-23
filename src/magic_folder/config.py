@@ -26,6 +26,7 @@ from os import (
 from base64 import (
     urlsafe_b64encode,
 )
+import hashlib
 
 from hyperlink import (
     DecodedURL,
@@ -84,6 +85,7 @@ from .snapshot import (
 )
 from .common import (
     atomic_makedirs,
+    valid_magic_folder_name,
 )
 from ._schema import (
     SchemaUpgrade,
@@ -397,7 +399,7 @@ def load_global_configuration(basedir):
     # but this is unsupported until Python 3.4.
     if not db_fname.exists():
         raise ValueError(
-            "{!r} doesn't exist.".format(db_fname.path),
+            "'{}' doesn't exist.".format(db_fname.path),
         )
 
     connection = _upgraded(
@@ -1194,7 +1196,7 @@ class GlobalConfigDatabase(object):
             cursor = self.database.cursor()
             cursor.execute("SELECT tahoe_node_directory FROM config")
             node_dir = FilePath(cursor.fetchone()[0])
-        with node_dir.child("node.url").open("rt") as f:
+        with node_dir.child("node.url").open("r") as f:
             return DecodedURL.from_text(f.read().strip().decode("utf8"))
 
     @property
@@ -1229,7 +1231,7 @@ class GlobalConfigDatabase(object):
 
         :returns: a MagicFolderConfig instance
 
-        :raises: ValueError if there is no such Magic Folder
+        :raises ValueError: if there is no such Magic Folder
         """
         with self.database:
             cursor = self.database.cursor()
@@ -1251,16 +1253,19 @@ class GlobalConfigDatabase(object):
             )
             return config
 
-    def get_default_state_path(self, name):
+    def _get_state_path(self, name):
         """
         :param unicode name: the name of a magic-folder (doesn't have to
             exist yet)
 
-        :returns: a default directory-name to contain the state of a
-            magic-folder. This directory will not exist and will be
-            a sub-directory of the config location.
+        :returns: the directory-name to contain the state of a magic-folder.
+            This directory will not exist and will be a sub-directory of the
+            config location.
         """
-        return self.basedir.child(name)
+        h = hashlib.sha256()
+        h.update(name.encode("utf8"))
+        hashed_name = urlsafe_b64encode(h.digest()).decode('ascii')
+        return self.basedir.child(u"folder-{}".format(hashed_name))
 
     def remove_magic_folder(self, name):
         """
@@ -1305,7 +1310,7 @@ class GlobalConfigDatabase(object):
                 failed_cleanups.append((clean.path, e))
         return failed_cleanups
 
-    def create_magic_folder(self, name, magic_path, state_path, author,
+    def create_magic_folder(self, name, magic_path, author,
                             collective_dircap, upload_dircap, poll_interval):
         """
         Add a new Magic Folder configuration.
@@ -1314,9 +1319,6 @@ class GlobalConfigDatabase(object):
 
         :param FilePath magic_path: the synchronized directory which
             must already exist.
-
-        :param FilePath state_path: the configuration and state
-            directory (which should not already exist)
 
         :param LocalAuthor author: the signer of snapshots created in
             this folder
@@ -1329,6 +1331,7 @@ class GlobalConfigDatabase(object):
 
         :returns: a MagicFolderConfig instance
         """
+        valid_magic_folder_name(name)
         with self.database:
             cursor = self.database.cursor()
             cursor.execute("SELECT name FROM magic_folders WHERE name=?", (name, ))
@@ -1340,9 +1343,10 @@ class GlobalConfigDatabase(object):
             raise ValueError(
                 "'{}' does not exist".format(magic_path.path)
             )
+        state_path = self._get_state_path(name).asTextMode("utf-8")
         if state_path.asBytesMode("utf-8").exists():
             raise ValueError(
-                "'{}' already exists".format(state_path.path)
+                "magic-folder state directory '{}' already exists".format(state_path.path)
             )
 
         stash_path = state_path.child(u"stash").asTextMode("utf-8")

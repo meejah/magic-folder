@@ -12,6 +12,7 @@ from __future__ import (
     unicode_literals,
 )
 
+from distutils.version import StrictVersion
 from json import (
     loads,
     dumps,
@@ -24,6 +25,7 @@ from hyperlink import (
 from hypothesis import (
     given,
     assume,
+    example,
 )
 
 from hypothesis.strategies import (
@@ -36,12 +38,15 @@ from hypothesis.strategies import (
 
 from testtools.matchers import (
     AfterPreprocessing,
-    MatchesAny,
+    AllMatch,
+    ContainsDict,
     Equals,
+    IsInstance,
+    MatchesAny,
     MatchesDict,
     MatchesListwise,
-    ContainsDict,
-    IsInstance,
+    MatchesPredicate,
+    StartsWith,
 )
 from testtools.twistedsupport import (
     succeeded,
@@ -78,17 +83,21 @@ from treq.testing import (
     StubTreq,
 )
 
+import werkzeug
+
 from allmydata.util.base32 import (
     b2a,
 )
 
 from .common import (
+    skipIf,
     SyncTestCase,
 )
 from .matchers import (
     matches_response,
     header_contains,
     is_hex_uuid,
+    matches_flushed_traceback
 )
 
 from .strategies import (
@@ -103,11 +112,12 @@ from ..snapshot import (
     create_local_author,
     format_filenode,
 )
-from ..cli import (
+from ..service import (
     MagicFolderService,
 )
 from ..web import (
     magic_folder_resource,
+    APIv1,
 )
 from ..config import (
     create_global_configuration,
@@ -312,7 +322,6 @@ def treq_for_folders(reactor, basedir, auth_token, folders, start_folder_service
         global_config.create_magic_folder(
             name,
             config[u"magic-path"],
-            config[u"state-path"],
             config[u"author"],
             config[u"collective-dircap"],
             config[u"upload-dircap"],
@@ -345,12 +354,11 @@ def treq_for_folders(reactor, basedir, auth_token, folders, start_folder_service
     return create_testing_http_client(reactor, global_config, global_service, lambda: auth_token, tahoe_client, WebSocketStatusService())
 
 
-def magic_folder_config(author, state_path, local_directory):
+def magic_folder_config(author, local_directory):
     # see also treq_for_folders() where these dicts are turned into
     # real magic-folder configs
     return {
         u"magic-path": local_directory,
-        u"state-path": state_path,
         u"author": author,
         u"collective-dircap": u"URI:DIR2-RO:{}:{}".format(b2a("\0" * 16), b2a("\1" * 32)),
         u"upload-dircap": u"URI:DIR2:{}:{}".format(b2a("\2" * 16), b2a("\3" * 32)),
@@ -420,7 +428,7 @@ class ListMagicFolderTests(SyncTestCase):
             basedir,
             AUTH_TOKEN,
             {
-                name: magic_folder_config(self.author, FilePath(self.mktemp()), path_u)
+                name: magic_folder_config(self.author, path_u)
                 for (name, path_u)
                 in folders.items()
             },
@@ -465,6 +473,109 @@ class ListMagicFolderTests(SyncTestCase):
         )
 
 
+
+class RedirectTests(SyncTestCase):
+    """
+    Test for handling redirects from werkzeug.
+    """
+    url = DecodedURL.from_text(u"http://example.invalid./v1/magic-folder")
+
+    @skipIf(
+        # The version in the nixos snapshot we are using is <1
+        # so don't test redirect handling there.
+        StrictVersion(werkzeug.__version__) < StrictVersion("1.0.0"),
+        "Old versions of werkzeug don't merge slashes."
+    )
+    @given(
+        folder_names(),
+    )
+    @example("%25")
+    @example(":")
+    @example(",")
+    def test_merge_slashes(self, folder_name):
+        """
+        Test that redirects are generated and have a JSON body.
+
+        We test this by using a `//` in the URL path, which werkzeug
+        redirects to not have the `/`.
+        """
+        author = create_local_author("alice")
+
+        local_path = FilePath(self.mktemp())
+        local_path.makedirs()
+
+        treq = treq_for_folders(
+            Clock(),
+            FilePath(self.mktemp()),
+            AUTH_TOKEN,
+            {folder_name: magic_folder_config(author, local_path)},
+            start_folder_services=False,
+        )
+
+        dest_url = self.url.child(folder_name, "snapshot")
+
+        # We apply .to_uri() here since hyperlink and werkzeug disagree
+        # on which characters to encocde.
+        # Seee https://github.com/python-hyper/hyperlink/issues/168
+        def to_iri(url_bytes):
+            return DecodedURL.from_text(url_bytes.decode("utf8")).to_iri()
+        match_url = AfterPreprocessing(
+            to_iri, Equals(dest_url.to_iri()),
+        )
+        self.assertThat(
+            authorized_request(
+                treq,
+                AUTH_TOKEN,
+                b"GET",
+                self.url.child(folder_name, "", "snapshot"),
+            ),
+            succeeded(
+                matches_response(
+                    # Maybe this could be BAD_REQUEST instead, sometimes, if
+                    # the path argument was bogus somehow.
+                    code_matcher=Equals(308),
+                    headers_matcher=header_contains(
+                        {
+                            "Content-Type": Equals(["application/json"]),
+                            "Location": MatchesListwise(
+                                [
+                                    match_url
+                                ]
+                            ),
+                        }
+                    ),
+                    body_matcher=AfterPreprocessing(
+                        loads,
+                        MatchesDict(
+                            {
+                                "location": match_url
+                            }
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    def test_werkzeug_issue_2157_fix(self):
+        """
+        Ensure that the only redirects that werkzeug will generate are merging slashes.
+
+        This ensures that the workaround to
+        https://github.com/pallets/werkzeug/issues/2157 is correct.
+        """
+        self.assertThat(
+            APIv1.app.url_map.iter_rules(),
+            AllMatch(
+                MatchesPredicate(
+                    lambda rule: rule.is_leaf and not rule.alias,
+                    "Rule %r is not a leaf, has an alias, or has a redirect specified. "
+                    "This will break our fix for https://github.com/pallets/werkzeug/issues/2157"
+                )
+            ),
+        )
+
+
+
 class CreateSnapshotTests(SyncTestCase):
     """
     Tests for creating a new snapshot in an existing Magic Folder using a
@@ -494,7 +605,7 @@ class CreateSnapshotTests(SyncTestCase):
             object(),
             FilePath(self.mktemp()),
             AUTH_TOKEN,
-            {folder_name: magic_folder_config(author, FilePath(self.mktemp()), local_path)},
+            {folder_name: magic_folder_config(author, local_path)},
             # The interesting behavior of this test hinges on this flag.  We
             # decline to start the folder services here.  Therefore, no local
             # snapshots will ever be created.  This lets us observe the
@@ -537,7 +648,7 @@ class CreateSnapshotTests(SyncTestCase):
             object(),
             FilePath(self.mktemp()),
             AUTH_TOKEN,
-            {folder_name: magic_folder_config(author, FilePath(self.mktemp()), local_path)},
+            {folder_name: magic_folder_config(author, local_path)},
             # This test carefully targets a failure mode that doesn't require
             # the service to be running.
             start_folder_services=False,
@@ -591,7 +702,7 @@ class CreateSnapshotTests(SyncTestCase):
             Clock(),
             FilePath(self.mktemp()),
             AUTH_TOKEN,
-            {folder_name: magic_folder_config(author, FilePath(self.mktemp()), local_path)},
+            {folder_name: magic_folder_config(author, local_path)},
             # Unlike test_wait_for_completion above we start the folder
             # services.  This will allow the local snapshot to be created and
             # our request to receive a response.
@@ -667,7 +778,7 @@ class CreateSnapshotTests(SyncTestCase):
             Clock(),
             FilePath(self.mktemp()),
             AUTH_TOKEN,
-            {folder_name: magic_folder_config(author, FilePath(self.mktemp()), local_path)},
+            {folder_name: magic_folder_config(author, local_path)},
             # Unlike test_wait_for_completion above we start the folder
             # services.  This will allow the local snapshot to be created and
             # our request to receive a response.
@@ -791,7 +902,6 @@ class ParticipantsTests(SyncTestCase):
 
         folder_config = magic_folder_config(
             create_local_author("iris"),
-            FilePath(self.mktemp()),
             local_path,
         )
         # we can't add a new participant if their DMD is the same as
@@ -881,6 +991,66 @@ class ParticipantsTests(SyncTestCase):
         author_names(),
         folder_names(),
     )
+    def test_add_participant_invalid(self, author, folder_name):
+        """
+        Missing keys in 'participant' JSON produces error
+        """
+        local_path = FilePath(self.mktemp())
+        local_path.makedirs()
+        folder_config = magic_folder_config(
+            create_local_author(author),
+            local_path,
+        )
+
+        root = create_fake_tahoe_root()
+        # put our Collective DMD into the fake root
+        root._uri.data[folder_config["collective-dircap"]] = dumps([
+            u"dirnode",
+            {
+                u"children": {
+                    author: format_filenode(folder_config["upload-dircap"]),
+                },
+            },
+        ])
+        tahoe_client = create_tahoe_client(
+            DecodedURL.from_text(u"http://invalid./"),
+            create_tahoe_treq_client(root),
+        )
+        treq = treq_for_folders(
+            Clock(),
+            FilePath(self.mktemp()),
+            AUTH_TOKEN,
+            {
+                folder_name: folder_config,
+            },
+            start_folder_services=False,
+            tahoe_client=tahoe_client,
+        )
+
+        # add a participant using the API
+        self.assertThat(
+            authorized_request(
+                treq,
+                AUTH_TOKEN,
+                b"POST",
+                self.url.child(folder_name, "participants"),
+                "not-json".encode("utf-8"),
+            ),
+            succeeded(
+                matches_response(
+                    code_matcher=Equals(BAD_REQUEST),
+                    body_matcher=AfterPreprocessing(
+                        loads,
+                        MatchesDict({"reason": StartsWith("Could not load JSON: ")})
+                    )
+                )
+            )
+        )
+
+    @given(
+        author_names(),
+        folder_names(),
+    )
     def test_add_participant_wrong_json(self, author, folder_name):
         """
         Missing keys in 'participant' JSON produces error
@@ -889,7 +1059,6 @@ class ParticipantsTests(SyncTestCase):
         local_path.makedirs()
         folder_config = magic_folder_config(
             create_local_author(author),
-            FilePath(self.mktemp()),
             local_path,
         )
 
@@ -952,7 +1121,6 @@ class ParticipantsTests(SyncTestCase):
         local_path.makedirs()
         folder_config = magic_folder_config(
             create_local_author(author),
-            FilePath(self.mktemp()),
             local_path,
         )
 
@@ -1018,7 +1186,6 @@ class ParticipantsTests(SyncTestCase):
         local_path.makedirs()
         folder_config = magic_folder_config(
             create_local_author(author),
-            FilePath(self.mktemp()),
             local_path,
         )
 
@@ -1083,7 +1250,6 @@ class ParticipantsTests(SyncTestCase):
         local_path.makedirs()
         folder_config = magic_folder_config(
             create_local_author(author),
-            FilePath(self.mktemp()),
             local_path,
         )
 
@@ -1148,7 +1314,6 @@ class ParticipantsTests(SyncTestCase):
         local_path.makedirs()
         folder_config = magic_folder_config(
             create_local_author(author),
-            FilePath(self.mktemp()),
             local_path,
         )
 
@@ -1190,6 +1355,13 @@ class ParticipantsTests(SyncTestCase):
             )
         )
 
+        self.assertThat(
+            self.eliot_logger.flushTracebacks(Exception),
+            MatchesListwise([
+                matches_flushed_traceback(Exception, "an unexpected error")
+            ]),
+        )
+
     @given(
         author_names(),
         folder_names(),
@@ -1204,7 +1376,6 @@ class ParticipantsTests(SyncTestCase):
         local_path.makedirs()
         folder_config = magic_folder_config(
             create_local_author(author),
-            FilePath(self.mktemp()),
             local_path,
         )
 
@@ -1248,4 +1419,11 @@ class ParticipantsTests(SyncTestCase):
                     )
                 )
             )
+        )
+
+        self.assertThat(
+            self.eliot_logger.flushTracebacks(Exception),
+            MatchesListwise([
+                matches_flushed_traceback(Exception, "an unexpected error")
+            ]),
         )
