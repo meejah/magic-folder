@@ -1001,6 +1001,29 @@ class MagicFolderConfig(object):
         return set(r[0] for r in rows)
 
     @with_cursor
+    def get_recent_remotesnapshot_paths(self, cursor, n):
+        """
+        Retrieve a set of the ``n`` most-recent relpaths of files that
+        have a remote representation.
+
+        :returns: a list of 2-tuples (relpath, timestamp)
+        """
+        cursor.execute(
+            """
+            SELECT
+                name, timestamp
+            FROM
+                [remote_snapshots]
+            ORDER BY
+                timestamp DESC
+            LIMIT
+                30
+            """
+        )
+        rows = cursor.fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    @with_cursor
     def get_remotesnapshot(self, cursor, name):
         """
         return the cap that represents the latest remote snapshot that
@@ -1438,7 +1461,7 @@ def _validate_listen_endpoint_str(ep_string):
     # XXX so, having the reactor here sucks...but not a lot of options
     # since serverFromString is the only way to validate an
     # endpoint-string
-    serverFromString(reactor, ep_string)
+    serverFromString(reactor, nativeString(ep_string))
 
 
 def _validate_connect_endpoint_str(ep_string):
@@ -1449,4 +1472,4 @@ def _validate_connect_endpoint_str(ep_string):
     # XXX so, having the reactor here sucks...but not a lot of options
     # since serverFromString is the only way to validate an
     # endpoint-string
-    clientFromString(reactor, ep_string)
+    clientFromString(reactor, nativeString(ep_string))

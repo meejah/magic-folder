@@ -131,7 +131,7 @@ class ListMagicFolder(AsyncTestCase):
             # for these tests, we never contact Tahoe so we can get
             # away with an "empty" Tahoe WebUI
             create_tahoe_client(DecodedURL.from_text(u""), StubTreq(Resource())),
-            WebSocketStatusService(),
+            WebSocketStatusService(reactor, self.config),
         )
 
     @inline_callbacks
@@ -249,7 +249,7 @@ class CreateMagicFolder(AsyncTestCase):
             FilePath(u"/non-tahoe-directory"),
         )
         global_service = GlobalService()
-        self.http_client = create_testing_http_client(reactor, self.config, global_service, lambda: self.config.api_token, tahoe_client, WebSocketStatusService())
+        self.http_client = create_testing_http_client(reactor, self.config, global_service, lambda: self.config.api_token, tahoe_client, WebSocketStatusService(reactor, self.config))
 
     @inline_callbacks
     def test_add_magic_folder(self):
