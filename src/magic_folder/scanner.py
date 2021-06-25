@@ -10,12 +10,12 @@ from zope.interface import (
     implementer,
 )
 from twisted.internet.defer import (
-    inlineCallbacks,
     returnValue,
 )
 from twisted.internet.task import (
     deferLater,
 )
+from eliot.twisted import inline_callbacks
 from twisted.application.internet import (
     TimerService,
 )
@@ -50,7 +50,7 @@ class ScannerService(TimerService):
             self._scan,
         )
 
-    @inlineCallbacks
+    @inline_callbacks
     def _scan(self):
         """
         Perform a scan for new files.
