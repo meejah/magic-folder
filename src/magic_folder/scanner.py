@@ -6,9 +6,6 @@ from __future__ import (
 )
 
 import attr
-from twisted.internet.task import (
-    deferLater,
-)
 from eliot.twisted import inline_callbacks
 from twisted.application.internet import (
     TimerService,
@@ -16,6 +13,7 @@ from twisted.application.internet import (
 from twisted.application.service import (
     MultiService
 )
+from twisted.internet.task import Cooperator
 from eliot import (
     start_action,
 )
@@ -35,6 +33,7 @@ class ScannerService(MultiService):
     _local_snapshot_service = attr.ib()
     _status = attr.ib()
     _timer = attr.ib(init=False)
+    _cooperator = attr.ib(init=False)
 
     @_timer.default
     def _create_timer_service(self):
@@ -46,9 +45,26 @@ class ScannerService(MultiService):
         timer.clock = self._reactor
         return timer
 
+    @_cooperator.default
+    def _create_cooperator(self):
+        def schedule(f):
+            return self._reactor.callLater(0, f)
+        # NOTE: We don't use CooperatorSevice here, since:
+        # - There is not a way to set the reactor on it
+        # - We want to stop it after the TimerService has
+        #   stoppped, so that it will have no pending work.
+        return Cooperator(
+            scheduler=schedule,
+        )
+
     def __attrs_post_init__(self):
         MultiService.__init__(self)
         self._timer.setServiceParent(self)
+
+    def stopService(self):
+        return MultiService.stopService(self).addCallback(
+            lambda _: self._cooperator.stop()
+        )
 
     @inline_callbacks
     def _scan(self):
@@ -59,7 +75,7 @@ class ScannerService(MultiService):
         # overlapping scans (i.e. if a scan takes longer than the
         # scan_interval we should not start a second one)
         with start_action(action_type="scanner:find-updates"):
-            yield find_updated_files(self._reactor, self._config, self._modified_file)
+            yield find_updated_files(self._cooperator, self._config, self._modified_file)
         # XXX update/use IStatus to report scan start/end
 
     def _modified_file(self, path):
@@ -106,11 +122,10 @@ def _is_newer_than_current(folder_config, name, local_mtime):
     return local_mtime != existing_mtime
 
 
-@inline_callbacks
-def find_updated_files(reactor, folder_config, on_new_file, _yield_interval=0.100):
+def find_updated_files(cooperator, folder_config, on_new_file):
     """
-    :param IReactor reactor: our reactor and source of time
-
+    :param Cooperator cooperator: The cooperator to use to control yielding to
+        the reactor.
     :param MagicFolderConfig folder_config: the folder for which we
         are scanning
 
@@ -118,21 +133,16 @@ def find_updated_files(reactor, folder_config, on_new_file, _yield_interval=0.10
         will be invoked for each updated / new file we find. The
         argument will be a FilePath of the updated/new file.
 
-    :param float _yield_interval: how often to return control to the
-        reactor in seconds
+    :returns: the scan duration, in seconds
     """
-    last_yield = reactor.seconds()
-
     # XXX we don't handle deletes
-
-    for path in folder_config.magic_path.walk():
-        if path.isdir():
-            continue
-        relpath = "/".join(path.segmentsFrom(folder_config.magic_path))
-        name = path2magic(relpath)
-        if _is_newer_than_current(folder_config, name, int(path.getModificationTime())):
-            on_new_file(path)
-
-        if reactor.seconds() - last_yield > _yield_interval:
-            yield deferLater(reactor, 0.0, lambda: None)
-            last_yield = reactor.seconds()
+    def _process():
+        for path in folder_config.magic_path.walk():
+            if path.isdir():
+                continue
+            relpath = "/".join(path.segmentsFrom(folder_config.magic_path))
+            name = path2magic(relpath)
+            if _is_newer_than_current(folder_config, name, int(path.getModificationTime())):
+                on_new_file(path)
+            yield
+    return cooperator.coiterate(_process())

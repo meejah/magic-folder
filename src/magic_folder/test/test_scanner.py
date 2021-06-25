@@ -21,6 +21,7 @@ from testtools.twistedsupport import (
     succeeded,
 )
 from twisted.internet import reactor
+from twisted.internet.task import Cooperator
 from twisted.python.filepath import (
     FilePath,
 )
@@ -72,6 +73,12 @@ class FindUpdatesTests(AsyncTestCase):
             1,
             1,
         )
+        # Use a cooperator that does not cooperate.
+        self.cooperator = Cooperator(
+            terminationPredicateFactory=lambda: lambda: False,
+            scheduler=lambda f: f(),
+        )
+        self.addCleanup(self.cooperator.stop)
 
     def test_scan_new(self):
         """
@@ -81,7 +88,7 @@ class FindUpdatesTests(AsyncTestCase):
 
         files = []
         self.assertThat(
-            find_updated_files(reactor, self.config, files.append),
+            find_updated_files(self.cooperator, self.config, files.append),
             succeeded(Always()),
         )
         self.assertThat(
@@ -109,7 +116,7 @@ class FindUpdatesTests(AsyncTestCase):
 
         files = []
         self.assertThat(
-            find_updated_files(reactor, self.config, files.append),
+            find_updated_files(self.cooperator, self.config, files.append),
             succeeded(Always()),
         )
         self.assertThat(
@@ -138,7 +145,7 @@ class FindUpdatesTests(AsyncTestCase):
 
         files = []
         self.assertThat(
-            find_updated_files(reactor, self.config, files.append),
+            find_updated_files(self.cooperator, self.config, files.append),
             succeeded(Always()),
         )
         self.assertThat(
@@ -167,7 +174,7 @@ class FindUpdatesTests(AsyncTestCase):
 
         files = []
         self.assertThat(
-            find_updated_files(reactor, self.config, files.append),
+            find_updated_files(self.cooperator, self.config, files.append),
             succeeded(Always()),
         )
         self.assertThat(
