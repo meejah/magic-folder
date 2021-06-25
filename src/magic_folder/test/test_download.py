@@ -115,6 +115,7 @@ class CacheTests(SyncTestCase):
             self.collective_cap,
             self.personal_cap,
             1,
+            0,
         )
         self.root = create_fake_tahoe_root()
         self.http_client = create_tahoe_treq_client(self.root)
@@ -410,6 +411,7 @@ class UpdateTests(AsyncTestCase):
             self.collective_cap,
             self.personal_cap,
             1,
+            0,
         )
         self.http_client = create_tahoe_treq_client(self.root)
         self.tahoe_client = create_tahoe_client(
@@ -656,6 +658,7 @@ class ConflictTests(AsyncTestCase):
             self.alice_collective,
             self.alice_personal,
             1,
+            0,
         )
 
         # note, we don't "run" this service, just populate ._cached_snapshots
@@ -690,7 +693,7 @@ class ConflictTests(AsyncTestCase):
         remote0 = RemoteSnapshot(
             name="foo",
             author=self.carol,
-            metadata=b"URI:CHK:",
+            metadata={"modification_time": 0},
             capability=cap0,
             parents_raw=[],
             content_cap=b"URI:CHK:",
@@ -735,7 +738,7 @@ class ConflictTests(AsyncTestCase):
         parent = RemoteSnapshot(
             name="foo",
             author=self.alice,
-            metadata=b"URI:CHK:",
+            metadata={"modification_time": 0},
             capability=parent_cap,
             parents_raw=[],
             content_cap=b"URI:CHK:",
@@ -748,7 +751,7 @@ class ConflictTests(AsyncTestCase):
         remote0 = RemoteSnapshot(
             name="foo",
             author=self.carol,
-            metadata=b"URI:CHK:",
+            metadata={"modification_time": 0},
             capability=cap0,
             parents_raw=[parent_cap],
             content_cap=b"URI:CHK:",
@@ -786,7 +789,7 @@ class ConflictTests(AsyncTestCase):
             parent = RemoteSnapshot(
                 name="foo",
                 author=self.alice,
-                metadata=b"URI:CHK:",
+                metadata={"modification_time": 0},
                 capability=parent_cap,
                 parents_raw=[] if not remotes else [remotes[-1].capability],
                 content_cap=b"URI:CHK:",
@@ -823,7 +826,7 @@ class ConflictTests(AsyncTestCase):
         parent = RemoteSnapshot(
             name="foo",
             author=self.alice,
-            metadata=b"URI:CHK:",
+            metadata={"modification_time": 0},
             capability=parent_cap,
             parents_raw=[],
             content_cap=b"URI:CHK:",
@@ -834,7 +837,7 @@ class ConflictTests(AsyncTestCase):
         child = RemoteSnapshot(
             name="foo",
             author=self.alice,
-            metadata=b"URI:CHK:",
+            metadata={"modification_time": 0},
             capability=child_cap,
             parents_raw=[parent_cap],
             content_cap=b"URI:CHK:",
@@ -845,7 +848,7 @@ class ConflictTests(AsyncTestCase):
         other = RemoteSnapshot(
             name="foo",
             author=self.alice,
-            metadata=b"URI:CHK:",
+            metadata={"modification_time": 0},
             capability=other_cap,
             parents_raw=[],
             content_cap=b"URI:CHK:",
@@ -878,7 +881,7 @@ class ConflictTests(AsyncTestCase):
         parent = RemoteSnapshot(
             name="foo",
             author=self.alice,
-            metadata=b"URI:CHK:",
+            metadata={"modification_time": 0},
             capability=parent_cap,
             parents_raw=[],
             content_cap=b"URI:CHK:",
@@ -889,7 +892,7 @@ class ConflictTests(AsyncTestCase):
         child = RemoteSnapshot(
             name="foo",
             author=self.alice,
-            metadata=b"URI:CHK:",
+            metadata={"modification_time": 0},
             capability=child_cap,
             parents_raw=[parent_cap],
             content_cap=b"URI:CHK:",

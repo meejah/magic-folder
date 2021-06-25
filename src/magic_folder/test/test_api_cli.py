@@ -544,6 +544,7 @@ class TestDumpState(AsyncTestCase):
             collective_dircap="URI:DIR2:hz46fi2e7gy6i3h4zveznrdr5q:i7yc4dp33y4jzvpe5jlaqyjxq7ee7qj2scouolumrfa6c7prgkvq",
             upload_dircap="URI:DIR2:hnua3xva2meb46dqm3ndmiqxhe:h7l2qnydoztv7gruwd65xtdhsvd3cm2kk2544knp5fhmzxoyckba",
             poll_interval=1,
+            scan_interval=0,
         )
         config.store_local_snapshot(
             LocalSnapshot(
@@ -560,7 +561,7 @@ class TestDumpState(AsyncTestCase):
             RemoteSnapshot(
                 "bar",
                 author,
-                {},
+                {"modification_time": 0},
                 capability="URI:DIR2-CHK:l7b3rn6pha6c2ipbbo4yxvunvy:c6ppejrkip4cdfo3kmyju36qbb6bbptzhh3pno7jb5b5myzoxkja:1:5:329",
                 parents_raw=[],
                 content_cap="URI:CHK2:yyyyyyyyyyyyyyyy:zzzzzzzzzzzzzzzz:1:1:256",

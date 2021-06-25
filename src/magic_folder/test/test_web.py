@@ -328,6 +328,7 @@ def treq_for_folders(reactor, basedir, auth_token, folders, start_folder_service
             config[u"collective-dircap"],
             config[u"upload-dircap"],
             config[u"poll-interval"],
+            config.get(u"scan-interval", 0),
         )
 
     if tahoe_client is None:
@@ -434,6 +435,7 @@ class MagicFolderTests(SyncTestCase):
                 'author_name': self.author.name,
                 'local_path': folder_path.path,
                 'poll_interval': 60,
+                'scan_interval': 0,
             })),
             succeeded(
                 matches_response(
@@ -481,6 +483,7 @@ class MagicFolderTests(SyncTestCase):
                 'author_name': self.author.name,
                 'local_path': folder_path.path,
                 'poll_interval': 60,
+                'scan_interval': 0,
             })),
             succeeded(
                 matches_response(
@@ -522,6 +525,36 @@ class MagicFolderTests(SyncTestCase):
             ),
         )
 
+    def test_add_folder_illegal_scan_interval(self):
+        """
+        A request for **POST /v1/magic-folder** that has a negative
+        scan_interval fails with NOT ACCEPTABLE.
+        """
+        treq = treq_for_folders(object(), FilePath(self.mktemp()), AUTH_TOKEN, {}, False)
+        self.assertThat(
+            authorized_request(
+                treq, AUTH_TOKEN, "POST", self.url, dumps({
+                    'name': 'valid',
+                    'author_name': 'author',
+                    'local_path': 'foo',
+                    'poll_interval': 60,
+                    'scan_interval': -123,
+                })
+            ),
+            succeeded(
+                matches_response(
+                    code_matcher=Equals(NOT_ACCEPTABLE),
+                    body_matcher=AfterPreprocessing(
+                        loads,
+                        MatchesDict(
+                            {
+                                "reason": StartsWith("scan_interval must be >= 0"),
+                            }
+                        ),
+                    ),
+                ),
+            ),
+        )
 
     @given(
         dictionaries(
@@ -587,6 +620,7 @@ class MagicFolderTests(SyncTestCase):
                                 u"magic_path": config.magic_path.path,
                                 u"stash_path": config.stash_path.path,
                                 u"poll_interval": config.poll_interval,
+                                u"scan_interval": config.scan_interval,
                                 u"is_admin": config.is_admin(),
                             }
                             for name, config

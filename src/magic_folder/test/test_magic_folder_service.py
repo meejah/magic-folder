@@ -101,6 +101,7 @@ class MagicFolderServiceTests(SyncTestCase):
             remote_snapshot_cache=Service(),
             downloader=MultiService(),
             initial_participants=participants,
+            scanner_service=Service(),
             clock=reactor,
         )
         self.assertThat(
@@ -142,6 +143,7 @@ class MagicFolderServiceTests(SyncTestCase):
             remote_snapshot_cache=Service(),
             downloader=MultiService(),
             initial_participants=participants,
+            scanner_service=Service(),
             clock=clock,
         )
         magic_folder.startService()
@@ -189,6 +191,7 @@ class MagicFolderServiceTests(SyncTestCase):
             remote_snapshot_cache=Service(),
             downloader=MultiService(),
             initial_participants=participants,
+            scanner_service=Service(),
             clock=clock,
         )
         magic_folder.startService()
@@ -274,6 +277,7 @@ class MagicFolderFromConfigTests(SyncTestCase):
             collective_dircap,
             upload_dircap,
             poll_interval,
+            0,
         )
 
         magic_folder = MagicFolder.from_config(

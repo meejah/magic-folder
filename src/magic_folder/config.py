@@ -142,7 +142,8 @@ _magicfolder_config_schema = Schema([
             collective_dircap    TEXT,              -- read-capability-string
             upload_dircap        TEXT,              -- write-capability-string
             magic_directory      TEXT,              -- local path of sync'd directory
-            poll_interval        INTEGER            -- seconds
+            poll_interval        INTEGER,           -- seconds
+            scan_interval        INTEGER            -- seconds
         )
         """,
         """
@@ -215,15 +216,18 @@ _magicfolder_config_schema = Schema([
         CREATE TABLE remote_snapshots
         (
             name          TEXT PRIMARY KEY, -- mangled name in UTF-8
-            snapshot_cap  TEXT              -- Tahoe-LAFS URI that represents the remote snapshot
+            snapshot_cap  TEXT,             -- Tahoe-LAFS URI that represents the remote snapshot
+            timestamp     INTEGER           -- Last-modified timestamp
         )
         """,
+
+        # 'timestamp' here comes from the Snapshot metadata's
+        # "modification_time" which in turn originally came from the
+        # LocalSnapshot -- which was the mtime of the file. We compare
+        # these when scanning for new files.
     ]),
 ])
 
-
-## XXX "parents_local" should be IDs of other local_snapshots, not
-## sure how to do that w/o docs here
 
 DELETE_SNAPSHOTS = ActionType(
     u"config:state-db:delete-local-snapshot-entry",
@@ -724,6 +728,7 @@ class MagicFolderConfig(object):
             upload_dircap,
             magic_path,
             poll_interval,
+            scan_interval,
     ):
         """
         Create the database state for a new Magic Folder and return a
@@ -751,7 +756,10 @@ class MagicFolderConfig(object):
             folder will read and write files belonging to this folder.
 
         :param int poll_interval: The interval, in seconds, on which to poll
-            for changes (for download?).
+            for remote changes (for download).
+
+        :param int scan_interval: The interval, in seconds, on which to poll
+            for local changes (for upload).
 
         :return: A new ``cls`` instance populated with the given
             configuration.
@@ -774,9 +782,10 @@ class MagicFolderConfig(object):
                     , upload_dircap
                     , magic_directory
                     , poll_interval
+                    , scan_interval
                     )
                 VALUES
-                    (?, ?, ?, ?, ?, ?, ?)
+                    (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     author.name,
@@ -786,6 +795,7 @@ class MagicFolderConfig(object):
                     upload_dircap,
                     magic_path.path,
                     poll_interval,
+                    scan_interval,
                 ),
             )
         return cls(name, connection)
@@ -964,19 +974,20 @@ class MagicFolderConfig(object):
         :param RemoteSnapshot remote_snapshot: The snapshot to store.
         """
         snapshot_cap = remote_snapshot.capability
+        mtime = remote_snapshot.metadata["modification_time"]
         action = STORE_OR_UPDATE_SNAPSHOTS(
             relpath=name,
         )
         with action:
             try:
-                cursor.execute("INSERT INTO remote_snapshots VALUES (?,?)",
-                               (name, snapshot_cap))
+                cursor.execute("INSERT INTO remote_snapshots VALUES (?,?,?)",
+                               (name, snapshot_cap, mtime))
                 action.add_success_fields(insert_or_update=u"insert")
             except (sqlite3.IntegrityError, sqlite3.OperationalError):
                 cursor.execute("UPDATE remote_snapshots"
-                               " SET snapshot_cap=?"
+                               " SET snapshot_cap=?, timestamp=?"
                                " WHERE [name]=?",
-                               (snapshot_cap, name))
+                               (snapshot_cap, mtime, name))
                 action.add_success_fields(insert_or_update=u"update")
 
     @with_cursor
@@ -1013,6 +1024,30 @@ class MagicFolderConfig(object):
                 return row[0].encode("utf-8")
             raise KeyError(name)
 
+    @with_cursor
+    def get_remotesnapshot_mtime(self, cursor, name):
+        """
+        return the timestamp of the latest remote snapshot that the client
+        has recorded in the db.
+
+        :param unicode name: The name to match.  See ``LocalSnapshot.name``.
+
+        :raise KeyError: If no snapshot exists for the given name.
+
+        :returns int: the timestamp of the remotesnapshot
+        """
+        action = FETCH_REMOTE_SNAPSHOTS_FROM_DB(
+            relpath=name,
+        )
+        with action:
+            cursor.execute("SELECT timestamp FROM remote_snapshots"
+                           " WHERE [name]=?",
+                           (name,))
+            row = cursor.fetchone()
+            if row:
+                return int(row[0])
+            raise KeyError(name)
+
     @property
     @with_cursor
     def magic_path(self, cursor):
@@ -1036,6 +1071,12 @@ class MagicFolderConfig(object):
     @with_cursor
     def poll_interval(self, cursor):
         cursor.execute("SELECT poll_interval FROM config")
+        return int(cursor.fetchone()[0])
+
+    @property
+    @with_cursor
+    def scan_interval(self, cursor):
+        cursor.execute("SELECT scan_interval FROM config")
         return int(cursor.fetchone()[0])
 
     def is_admin(self):
@@ -1315,7 +1356,8 @@ class GlobalConfigDatabase(object):
         return failed_cleanups
 
     def create_magic_folder(self, name, magic_path, author,
-                            collective_dircap, upload_dircap, poll_interval):
+                            collective_dircap, upload_dircap, poll_interval,
+                            scan_interval):
         """
         Add a new Magic Folder configuration.
 
@@ -1332,6 +1374,12 @@ class GlobalConfigDatabase(object):
 
         :param unicode upload_dircap: the write-capability of the
             directory we upload data into.
+
+        :param int poll_interval: how often to scan for remote changes
+            (in seconds).
+
+        :param int scan_interval: how often to scan for local changes
+            (in seconds).
 
         :returns: a MagicFolderConfig instance
         """
@@ -1368,6 +1416,7 @@ class GlobalConfigDatabase(object):
                 upload_dircap,
                 magic_path.asTextMode("utf-8"),
                 poll_interval,
+                scan_interval,
             )
             # add to the global config
             with self.database:
