@@ -9,9 +9,6 @@ import attr
 from zope.interface import (
     implementer,
 )
-from twisted.internet.defer import (
-    returnValue,
-)
 from twisted.internet.task import (
     deferLater,
 )
@@ -58,9 +55,8 @@ class ScannerService(TimerService):
         # XXX probably want a lock ("or something") so we don't do
         # overlapping scans (i.e. if a scan takes longer than the
         # scan_interval we should not start a second one)
-        with start_action(action_type="scanner:find-updates") as action:
-            duration = yield find_updated_files(self._reactor, self._config, self._modified_file)
-            action.add_success_fields(scan_duration=duration)
+        with start_action(action_type="scanner:find-updates"):
+            yield find_updated_files(self._reactor, self._config, self._modified_file)
         # XXX update/use IStatus to report scan start/end
 
     def _modified_file(self, path):
@@ -107,7 +103,7 @@ def _is_newer_than_current(folder_config, name, local_mtime):
     return local_mtime != existing_mtime
 
 
-@inlineCallbacks
+@inline_callbacks
 def find_updated_files(reactor, folder_config, on_new_file, _yield_interval=0.100):
     """
     :param IReactor reactor: our reactor and source of time
@@ -121,11 +117,8 @@ def find_updated_files(reactor, folder_config, on_new_file, _yield_interval=0.10
 
     :param float _yield_interval: how often to return control to the
         reactor in seconds
-
-    :returns: the scan duration, in seconds
     """
-
-    started = last_yield = reactor.seconds()
+    last_yield = reactor.seconds()
 
     # XXX we don't handle deletes
 
@@ -140,5 +133,3 @@ def find_updated_files(reactor, folder_config, on_new_file, _yield_interval=0.10
         if reactor.seconds() - last_yield > _yield_interval:
             yield deferLater(reactor, 0.0, lambda: None)
             last_yield = reactor.seconds()
-    duration = reactor.seconds() - started
-    returnValue(duration)
