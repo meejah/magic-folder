@@ -6,9 +6,6 @@ from __future__ import (
 )
 
 import attr
-from zope.interface import (
-    implementer,
-)
 from twisted.internet.task import (
     deferLater,
 )
@@ -17,7 +14,7 @@ from twisted.application.internet import (
     TimerService,
 )
 from twisted.application.service import (
-    IService,
+    MultiService
 )
 from eliot import (
     start_action,
@@ -29,8 +26,7 @@ from .magicpath import (
 
 
 @attr.s
-@implementer(IService)
-class ScannerService(TimerService):
+class ScannerService(MultiService):
     """
     Periodically scan a local Magic Folder for new or updated files
     """
@@ -38,14 +34,21 @@ class ScannerService(TimerService):
     _config = attr.ib()
     _local_snapshot_service = attr.ib()
     _status = attr.ib()
+    _timer = attr.ib(init=False)
 
-    def __attrs_post_init__(self):
+    @_timer.default
+    def _create_timer_service(self):
         assert self._config.scan_interval > 0, "Illegal scan_interval"
-        TimerService.__init__(
-            self,
+        timer = TimerService(
             self._config.scan_interval,
             self._scan,
         )
+        timer.clock = self._reactor
+        return timer
+
+    def __attrs_post_init__(self):
+        MultiService.__init__(self)
+        self._timer.setServiceParent(self)
 
     @inline_callbacks
     def _scan(self):
