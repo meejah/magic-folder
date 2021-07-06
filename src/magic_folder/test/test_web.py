@@ -56,15 +56,16 @@ from testtools.twistedsupport import (
 )
 
 from twisted.web.http import (
-    OK,
-    CREATED,
-    UNAUTHORIZED,
-    NOT_IMPLEMENTED,
-    NOT_ALLOWED,
-    NOT_ACCEPTABLE,
-    NOT_FOUND,
     BAD_REQUEST,
+    CONFLICT,
+    CREATED,
     INTERNAL_SERVER_ERROR,
+    NOT_ACCEPTABLE,
+    NOT_ALLOWED,
+    NOT_FOUND,
+    NOT_IMPLEMENTED,
+    OK,
+    UNAUTHORIZED,
 )
 from twisted.internet.task import Clock
 from twisted.web.resource import (
@@ -282,15 +283,20 @@ def treq_for_folders(
         reactor, basedir, auth_token, folders, start_folder_services, tahoe_client
     ).http_client
 
-def magic_folder_config(author, local_directory):
+
+def magic_folder_config(author, local_directory, admin=False):
     # see also treq_for_folders() where these dicts are turned into
     # real magic-folder configs
     return {
-        u"magic-path": local_directory,
-        u"author": author,
-        u"collective-dircap": u"URI:DIR2-RO:{}:{}".format(b2a("\0" * 16), b2a("\1" * 32)),
-        u"upload-dircap": u"URI:DIR2:{}:{}".format(b2a("\2" * 16), b2a("\3" * 32)),
-        u"poll-interval": 60,
+        "magic-path": local_directory,
+        "author": author,
+        "collective-dircap": "URI:DIR2{}:{}:{}".format(
+            "" if admin else "-RO",
+            b2a("\0" * 16),
+            b2a("\1" * 32),
+        ),
+        "upload-dircap": "URI:DIR2:{}:{}".format(b2a("\2" * 16), b2a("\3" * 32)),
+        "poll-interval": 60,
     }
 
 
@@ -521,6 +527,281 @@ class MagicFolderTests(SyncTestCase):
             ),
         )
 
+
+class MagicFolderInstanceTests(SyncTestCase):
+    """
+    Tests for ``/v1/magic-folder/<folder-name>``.
+    """
+
+    url = DecodedURL.from_text("http://example.invalid./v1/magic-folder")
+
+    def setUp(self):
+        super(MagicFolderInstanceTests, self).setUp()
+        self.author = create_local_author("alice")
+
+    @given(
+        sampled_from([b"GET", b"POST", b"PUT", b"PATCH", b"OPTIONS"]), folder_names()
+    )
+    def test_method_not_allowed(self, method, folder_name):
+        """
+        A request to **/v1/magic-folder/<folder-name>** with a method other than **DELETE**
+        receives a NOT ALLOWED or NOT IMPLEMENTED response.
+        """
+        local_path = FilePath(self.mktemp())
+        local_path.makedirs()
+        treq = treq_for_folders(
+            object(),
+            FilePath(self.mktemp()),
+            AUTH_TOKEN,
+            {
+                folder_name: magic_folder_config(self.author, local_path),
+            },
+            False,
+        )
+        self.assertThat(
+            authorized_request(
+                treq,
+                AUTH_TOKEN,
+                method,
+                self.url.child(folder_name),
+            ),
+            succeeded(
+                matches_response(
+                    code_matcher=MatchesAny(
+                        Equals(NOT_ALLOWED),
+                        Equals(NOT_IMPLEMENTED),
+                    ),
+                ),
+            ),
+        )
+
+    @given(
+        folder_names(),
+    )
+    def test_leave_folder(self, folder_name):
+        """
+        A request for **DELETE /v1/magic-folder/<folder-name>** succeeds.
+        """
+        local_path = FilePath(self.mktemp())
+        local_path.makedirs()
+        treq = treq_for_folders(
+            object(),
+            FilePath(self.mktemp()),
+            AUTH_TOKEN,
+            {
+                folder_name: magic_folder_config(self.author, local_path),
+            },
+            False,
+        )
+        self.assertThat(
+            authorized_request(
+                treq,
+                AUTH_TOKEN,
+                "DELETE",
+                self.url.child(folder_name),
+                b"{}",
+            ),
+            succeeded(
+                matches_response(
+                    code_matcher=MatchesAny(
+                        Equals(OK),
+                    ),
+                    body_matcher=AfterPreprocessing(
+                        loads,
+                        MatchesDict({}),
+                    ),
+                ),
+            ),
+        )
+
+    @given(
+        folder_names(),
+    )
+    def test_leave_folder_fail(self, folder_name):
+        """
+        A request for **DELETE /v1/magic-folder/<folder-name>** succeeds.
+        """
+        local_path = FilePath(self.mktemp())
+        local_path.makedirs()
+        basedir = FilePath(self.mktemp())
+        node = MagicFolderNode.create(
+            object(),
+            basedir,
+            AUTH_TOKEN,
+            {
+                folder_name: magic_folder_config(self.author, local_path),
+            },
+            False,
+        )
+
+        basedir.chmod(0o500)
+        self.addCleanup(basedir.chmod, 0o700)
+
+        folder_service = node.global_service.get_folder_service(folder_name)
+        folder_config_dir = folder_service.config.stash_path.parent()
+
+        self.assertThat(
+            authorized_request(
+                node.http_client,
+                AUTH_TOKEN,
+                "DELETE",
+                self.url.child(folder_name),
+                b"{}",
+            ),
+            succeeded(
+                matches_response(
+                    code_matcher=MatchesAny(
+                        Equals(INTERNAL_SERVER_ERROR),
+                    ),
+                    body_matcher=AfterPreprocessing(
+                        loads,
+                        MatchesDict(
+                            {
+                                "reason": Contains(
+                                    "Problems while removing state directories"
+                                ),
+                                "details": MatchesDict(
+                                    {
+                                        folder_config_dir.path: Contains(
+                                            "Permission denied"
+                                        )
+                                    }
+                                ),
+                            }
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    @given(
+        folder_names(),
+    )
+    def test_leave_folder_admin(self, folder_name):
+        """
+        A request for **DELETE /v1/magic-folder/<folder-name>** succeeds.
+        """
+        local_path = FilePath(self.mktemp())
+        local_path.makedirs()
+        treq = treq_for_folders(
+            object(),
+            FilePath(self.mktemp()),
+            AUTH_TOKEN,
+            {
+                folder_name: magic_folder_config(self.author, local_path, admin=True),
+            },
+            False,
+        )
+        self.assertThat(
+            authorized_request(
+                treq,
+                AUTH_TOKEN,
+                "DELETE",
+                self.url.child(folder_name),
+                b"{}",
+            ),
+            succeeded(
+                matches_response(
+                    code_matcher=MatchesAny(
+                        Equals(CONFLICT),
+                    ),
+                    body_matcher=AfterPreprocessing(
+                        loads,
+                        MatchesDict({"reason": Contains("holds a write capability")}),
+                    ),
+                ),
+            ),
+        )
+
+    @given(
+        folder_names(),
+    )
+    def test_leave_folder_admin_really(self, folder_name):
+        """
+        A request for **DELETE /v1/magic-folder/<folder-name>** succeeds.
+        """
+        local_path = FilePath(self.mktemp())
+        local_path.makedirs()
+        treq = treq_for_folders(
+            object(),
+            FilePath(self.mktemp()),
+            AUTH_TOKEN,
+            {
+                folder_name: magic_folder_config(self.author, local_path, admin=True),
+            },
+            False,
+        )
+        self.assertThat(
+            authorized_request(
+                treq,
+                AUTH_TOKEN,
+                "DELETE",
+                self.url.child(folder_name),
+                dumps(
+                    {
+                        "really-delete-write-capability": True,
+                    }
+                ),
+            ),
+            succeeded(
+                matches_response(
+                    code_matcher=MatchesAny(
+                        Equals(OK),
+                    ),
+                    body_matcher=AfterPreprocessing(
+                        loads,
+                        MatchesDict({}),
+                    ),
+                ),
+            ),
+        )
+
+    @given(
+        folder_names(),
+    )
+    def test_leave_folder_not_existing(self, folder_name):
+        """
+        A request for **DELETE /v1/magic-folder/<folder-name>** with a non-existant
+        magic-folder fails with NOT FOUND.
+        """
+        root = create_fake_tahoe_root()
+        tahoe_client = create_tahoe_client(
+            DecodedURL.from_text("http://invalid./"),
+            create_tahoe_treq_client(root),
+        )
+
+        basedir = FilePath(self.mktemp())
+        treq = treq_for_folders(
+            object(),
+            basedir,
+            AUTH_TOKEN,
+            {},
+            False,
+            tahoe_client,
+        )
+
+        self.assertThat(
+            authorized_request(
+                treq,
+                AUTH_TOKEN,
+                b"DELETE",
+                self.url.child(folder_name),
+                b"{}",
+            ),
+            succeeded(
+                matches_response(
+                    code_matcher=Equals(NOT_FOUND),
+                    body_matcher=AfterPreprocessing(
+                        loads,
+                        MatchesDict(
+                            {
+                                "reason": StartsWith("No such magic-folder"),
+                            }
+                        ),
+                    ),
+                ),
+            ),
+        )
 
 
 class RedirectTests(SyncTestCase):
