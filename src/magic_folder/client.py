@@ -75,18 +75,21 @@ class MagicFolderApiError(ClientError):
     A Magic Folder HTTP API returned a failure code.
     """
     code = attr.ib()
-    body = attr.ib()
+    reason = attr.ib()
+    extra_fields = attr.ib()
 
     def __repr__(self):
-        return "<MagicFolderApiError code={} body={!r}>".format(
+        return "<MagicFolderApiError code={} reason={!r} extra_fields={!r}>".format(
             self.code,
-            self.body,
+            self.reason,
+            self.extra_fields,
         )
 
     def __str__(self):
-        return u"Magic Folder HTTP API reported error {}: {}".format(
+        return u"Magic Folder HTTP API reported error {}: {}{}".format(
             self.code,
-            self.body,
+            self.reason,
+            " ({})".format(self.extra_fields) if self.extra_fields else "",
         )
 
 
@@ -101,9 +104,10 @@ def _get_content_check_code(acceptable_codes, res):
     :return Deferred[bytes]: If the response code is acceptable, a Deferred
         which fires with the response body.
     """
-    body = yield res.content()
+    body = yield res.json()
     if res.code not in acceptable_codes:
-        raise MagicFolderApiError(res.code, body)
+        reason = body.pop("reason", None)
+        raise MagicFolderApiError(res.code, reason, body)
     returnValue(body)
 
 
@@ -181,8 +185,7 @@ class MagicFolderClient(object):
             )
 
         body = yield _get_content_check_code([http.OK, http.CREATED], response)
-        # all responses should contain JSON
-        returnValue(json.loads(body))
+        returnValue(body)
 
 
 @implementer(IAgentEndpointFactory)

@@ -195,7 +195,7 @@ class TestApiAddSnapshot(AsyncTestCase):
         )
         self.assertThat(
             stderr.getvalue().strip(),
-            Equals('{"reason": "a really good one"}')
+            Contains("a really good one")
         )
 
 
@@ -464,8 +464,8 @@ class TestMagicApi(AsyncTestCase):
             Equals("")
         )
         self.assertThat(
-            json.loads(stderr.getvalue()),
-            Equals({"reason": "an explanation"})
+            stderr.getvalue(),
+            Contains("an explanation")
         )
 
     @inlineCallbacks
