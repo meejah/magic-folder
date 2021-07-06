@@ -36,6 +36,7 @@ from twisted.internet.defer import (
 from .cli import (
     _default_config_path,
     load_global_configuration,
+    to_unicode,
 )
 from .client import (
     CannotAccessAPIError,
@@ -75,7 +76,7 @@ def add_snapshot(options):
 
 class DumpStateOptions(usage.Options):
     optParameters = [
-        ("folder", "n", None, "Name of the magic-folder whose state to dump"),
+        ("folder", "n", None, "Name of the magic-folder whose state to dump", to_unicode),
     ]
 
     def postOptions(self):

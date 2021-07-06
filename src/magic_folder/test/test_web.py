@@ -878,6 +878,12 @@ class CreateSnapshotTests(SyncTestCase):
             succeeded(
                 matches_response(
                     code_matcher=Equals(NOT_FOUND),
+                    body_matcher=AfterPreprocessing(
+                        loads,
+                        ContainsDict({
+                            "reason": StartsWith("No such magic-folder"),
+                        })
+                    )
                 ),
             )
         )
@@ -920,6 +926,12 @@ class ParticipantsTests(SyncTestCase):
             succeeded(
                 matches_response(
                     code_matcher=Equals(NOT_FOUND),
+                    body_matcher=AfterPreprocessing(
+                        loads,
+                        ContainsDict({
+                            "reason": StartsWith("No such magic-folder"),
+                        })
+                    )
                 ),
             )
         )
