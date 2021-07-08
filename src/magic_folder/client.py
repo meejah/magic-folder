@@ -5,6 +5,7 @@ from __future__ import (
     absolute_import,
     division,
     print_function,
+    unicode_literals,
 )
 
 import json
@@ -91,6 +92,15 @@ class MagicFolderApiError(ClientError):
             self.reason,
             " ({})".format(self.extra_fields) if self.extra_fields else "",
         )
+
+    def to_json(self):
+        js = {
+            "code": self.code,
+            "reason": self.reason,
+        }
+        if self.extra_fields:
+            js.expand(self.extra_fields)
+        return js
 
 
 @inlineCallbacks
