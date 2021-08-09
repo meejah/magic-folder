@@ -274,7 +274,6 @@ class FindUpdatesTests(SyncTestCase):
             self.config,
             SnapshotService(),
             UploaderService(),
-            object(),
             cooperator=self.cooperator,
             scan_interval=None,
         )
@@ -316,7 +315,6 @@ class FindUpdatesTests(SyncTestCase):
             self.config,
             SnapshotService(),
             UploaderService(),
-            object(),
             cooperator=self.cooperator,
             scan_interval=1,
         )

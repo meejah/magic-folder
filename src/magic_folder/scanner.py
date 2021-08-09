@@ -46,18 +46,16 @@ class ScannerService(MultiService):
 
     _config = attr.ib()
     _local_snapshot_service = attr.ib()  # LocalSnapshotService instance
-    _uploader_service = attr.ib()  # UploaderService instance
     _status = attr.ib()
     _cooperator = attr.ib()
     _scan_interval = attr.ib()
     _lock = attr.ib(init=False, factory=DeferredLock)
 
     @classmethod
-    def from_config(cls, clock, folder_config, local_snapshot_service, uploader_service, status):
+    def from_config(cls, clock, folder_config, local_snapshot_service, status):
         return cls(
             config=folder_config,
             local_snapshot_service=local_snapshot_service,
-            uploader_service=uploader_service,
             status=status,
             cooperator=_create_cooperator(clock),
             scan_interval=folder_config.scan_interval,
@@ -109,15 +107,6 @@ class ScannerService(MultiService):
         def process(path):
             d = self._local_snapshot_service.add_file(path)
             d.addErrback(write_failure)
-
-            def made_snapshot(arg):
-                # maybe start an upload .. actually doesn't check
-                # first, so this will stack up one "do an upload" per
-                # file scanned because of the lock-based
-                # implementation there...
-                self._uploader_service.perform_upload()
-                return arg
-            d.addCallback(made_snapshot)
             results.append(d)
 
         # XXX update/use IStatus to report scan start/end
@@ -127,8 +116,6 @@ class ScannerService(MultiService):
                 self._cooperator, self._config, process, status=self._status
             )
             yield gatherResults(results)
-        # if we aren't already doing uploads, start some now
-        self._uploader_service.perform_upload()
 
 
 def find_updated_files(cooperator, folder_config, on_new_file, status):

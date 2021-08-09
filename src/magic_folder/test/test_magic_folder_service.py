@@ -79,7 +79,9 @@ from .strategies import (
 )
 from .test_local_snapshot import (
     MemorySnapshotCreator,
+    NoOpUploader,
 )
+
 
 class MagicFolderServiceTests(SyncTestCase):
     """
@@ -152,6 +154,7 @@ class MagicFolderServiceTests(SyncTestCase):
         local_snapshot_service = LocalSnapshotService(
             mf_config,
             local_snapshot_creator,
+            NoOpUploader(),
             folder_status,
         )
 
@@ -215,6 +218,7 @@ class MagicFolderServiceTests(SyncTestCase):
         local_snapshot_service = LocalSnapshotService(
             config,
             local_snapshot_creator,
+            NoOpUploader(),
             folder_status,
         )
 

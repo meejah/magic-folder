@@ -74,6 +74,15 @@ from .strategies import (
     absolute_paths,
 )
 
+
+class NoOpUploader(object):
+    """
+    A do-nothing version of UploaderSerice
+    """
+    def perform_upload(self):
+        pass
+
+
 @attr.s
 class MemorySnapshotCreator(object):
     """
@@ -124,6 +133,7 @@ class LocalSnapshotServiceTests(SyncTestCase):
         self.snapshot_service = LocalSnapshotService(
             config=self.magic_config,
             snapshot_creator=self.snapshot_creator,
+            uploader_service=NoOpUploader(),
             status=FolderStatus(self.magic_config.name, self.status),
         )
 
