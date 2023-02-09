@@ -51,9 +51,13 @@ def _request(http_client, method, url, **kwargs):
     :param **kwargs: Any additional keyword arguments to pass along to
         ``HTTPClient``.
     """
+    assert 'header' not in kwargs, "If anyone uses header= need to merge headers here"
     return http_client.request(
         method,
         url.to_uri().to_text().encode("ascii"),
+        headers={
+            b"Accept": [b"text/plain"],
+        },
         **kwargs
     )
 
